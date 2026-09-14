@@ -8,12 +8,16 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 - Single video, playlist, and channel downloads from one simple URL prompt
 - Interactive mode by default; direct one-shot usage from the command line
+- Videos are always saved as **.mp4** (mp4-native streams preferred,
+  others remuxed without re-encoding; audio-only saves **.mp3**)
 - Quality menu with **Best** as the safe default (plus 1080p / 720p / 480p)
-- Audio-only downloads saved as mp3
 - Automatic resume of interrupted downloads and safe skip of existing files
 - Live progress bars with size, speed, and ETA
-- Sequential playlist/channel downloads with a final summary
-  (downloaded / skipped / failed) - one broken video never stops the batch
+- Playlists and channels are organized into their own subfolder
+  (`Downloads/<Playlist Title>/`) with numbered files (`01 - Title.mp4`)
+  numbered by playlist position, stable across resumed runs
+- A failed item never stops the batch: the summary reports
+  downloaded / failed items and re-running retries only the failures
 - Plain-English error messages; full detail only with `--verbose`
 - Cross-platform: Windows, macOS, and Linux
 
@@ -145,19 +149,29 @@ Downloading: Example Video #3
 [██████████████░░░░░░░░░░░░░░] 71.0%  245.0 MB
 ```
 
+Files are saved into a folder named after the playlist or channel, with
+numbers matching each item's position in the list:
+
+```text
+Downloads/
+└── Top Trending Videos of the Week/
+    ├── 01 - First Video Title.mp4
+    ├── 02 - Second Video Title.mp4
+    └── 03 - Third Video Title.mp4
+```
+
 If an individual video fails, the run continues and a summary is printed
 at the end:
 
 ```text
 Playlist completed.
   ✓ Downloaded: 10
-  ↷ Skipped:    1
   ✗ Failed:     1
     - Some Unavailable Video
 ```
 
-Simply re-run the same command afterwards: files that already downloaded
-are skipped, so only the missing items are fetched.
+Simply re-run the same command afterwards: finished files are skipped,
+so only the missing items are fetched - numbering stays stable.
 
 ## Interrupted downloads
 

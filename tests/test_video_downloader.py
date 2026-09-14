@@ -101,7 +101,7 @@ def test_engine_classify_reexport():
 # --------------------------------------------------------------------------
 
 def test_quality_format_mapping():
-    assert engine.QUALITY_FORMATS["best"] == "bestvideo*+bestaudio/best"
+    assert engine.QUALITY_FORMATS["best"].startswith("bestvideo[ext=mp4]")
     assert "height<=1080" in engine.QUALITY_FORMATS["1080p"]
     assert "height<=720" in engine.QUALITY_FORMATS["720p"]
     assert "height<=480" in engine.QUALITY_FORMATS["480p"]
@@ -115,8 +115,27 @@ def test_build_options_safe_defaults(tmp_path):
     assert opts["noplaylist"] is False
     assert str(tmp_path) in opts["outtmpl"]["default"]
     assert opts["retries"] >= 3
-    assert "postprocessors" not in opts
     assert isinstance(opts["logger"], engine._QuietLogger)
+
+
+def test_build_options_videos_are_mp4(tmp_path):
+    opts = engine.build_options(tmp_path, "best")
+    assert opts["merge_output_format"] == "mp4"
+    keys = [pp["key"] for pp in opts["postprocessors"]]
+    assert keys == ["FFmpegVideoRemuxer"]
+    assert "[ext=mp4]" in opts["format"] and "[ext=m4a]" in opts["format"]
+
+
+def test_build_options_audio_has_no_mp4_merger(tmp_path):
+    opts = engine.build_options(tmp_path, "audio")
+    assert "merge_output_format" not in opts
+    keys = [pp["key"] for pp in opts["postprocessors"]]
+    assert keys == ["FFmpegExtractAudio"]
+
+
+def test_build_options_number_prefix(tmp_path):
+    opts = engine.build_options(tmp_path, "best", number_prefix="03 - ")
+    assert opts["outtmpl"]["default"].endswith("03 - %(title)s.%(ext)s")
 
 
 def test_build_options_audio_postprocessor(tmp_path):
@@ -319,6 +338,7 @@ class FakeDownloader(engine.Downloader):
     probe_info: dict | None = None
     probe_error: Exception | None = None
     run_results: list | None = None
+    run_failures: list | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -329,7 +349,8 @@ class FakeDownloader(engine.Downloader):
         return dict(self.probe_info or {})
 
     def run(self, url, outdir, quality="best", progress_fn=None):
-        return list(self.run_results or [])
+        return (list(self.run_results or []),
+                list(self.run_failures or []))
 
 
 @pytest.fixture()
@@ -339,6 +360,7 @@ def fake_engine(monkeypatch):
     FakeDownloader.probe_info = None
     FakeDownloader.probe_error = None
     FakeDownloader.run_results = None
+    FakeDownloader.run_failures = None
     return FakeDownloader
 
 
@@ -454,6 +476,26 @@ def test_interactive_flow_happy_path(fake_engine, capsys, tmp_path, monkeypatch)
     assert "Saved to:" in out
 
 
+def test_direct_download_reports_failed_playlist_items(fake_engine, capsys,
+                                                       tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = {"_type": "playlist", "title": "My List",
+                              "webpage_url": "https://x.test/playlist",
+                              "entries": [{"title": "a"}, {"title": "b"}]}
+    fake_engine.run_results = [{"title": "a"}]
+    fake_engine.run_failures = [("b", "A network problem occurred.")]
+
+    args = cli.build_parser().parse_args(["https://x.test/playlist"])
+    assert cli.run_download(args) == 1
+
+    out = capsys.readouterr().out
+    assert "Downloaded: 1" in out
+    assert "Failed:     1" in out
+    assert "- b" in out
+    assert "retry only the failed" in out
+
+
 def test_interactive_flow_invalid_url(fake_engine, capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("not a url\n"))
     assert cli.main([]) == 1
@@ -523,6 +565,162 @@ def test_already_downloaded_ignores_partial_files(tmp_path):
     assert dl.already_downloaded(tmp_path, "My Video", "best") is False
 
 
+def test_already_downloaded_ignores_pre_merge_intermediates(tmp_path):
+    # "Title.f397.mp4" is a video-only intermediate awaiting its audio
+    # stream; it must not count as a finished download.
+    (tmp_path / "My Video.f397.mp4").write_bytes(b"x")
+    (tmp_path / "My Video.f140.m4a").write_bytes(b"x")
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is False
+    assert dl.already_downloaded(tmp_path, "My Video", "best",
+                                 numbered=True) is False
+    (tmp_path / "My Video.mp4").write_bytes(b"x")
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is True
+
+
+def test_already_downloaded_recognizes_numbered_files(tmp_path):
+    (tmp_path / "01 - My Video.mp4").write_bytes(b"x")
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.already_downloaded(tmp_path, "My Video", "best",
+                                 numbered=True) is True
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is False
+
+
+def test_category_folder_sanitizes_title(tmp_path):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    folder = dl.category_folder(tmp_path, {"title": "My: Cool <List>?"},
+                                "playlist")
+    assert folder.parent == tmp_path
+    assert "My" in folder.name
+    assert ":" not in folder.name and "<" not in folder.name and "?" not in folder.name
+
+
+def test_category_folder_fallback_names(tmp_path):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.category_folder(tmp_path, {}, "channel") == tmp_path / "Channel"
+    assert dl.category_folder(tmp_path, {"title": "   "}, "playlist") == \
+        tmp_path / "Playlist"
+
+
+def test_run_routes_playlist_into_numbered_subfolder(tmp_path, monkeypatch):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "playlist", "title": "My List",
+        "webpage_url": "https://x.test/playlist?list=PL1",
+        "entries": [{"title": "a", "url": "https://x.test/1"},
+                    {"title": "b", "url": "https://x.test/2"}]},
+        raising=False)
+    recorded: list[tuple, ] = []
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix=""):
+        recorded.append((outdir, number_prefix))
+        return [{"title": item_label}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    results, failed = dl.run("https://x.test/playlist?list=PL1", tmp_path, "best")
+
+    target = tmp_path / "My List"
+    assert dl.last_target_dir == target
+    assert target.is_dir()
+    assert recorded == [(target, "01 - "), (target, "02 - ")]
+    assert len(results) == 2
+    assert failed == []
+
+
+def test_run_playlist_continues_past_failed_items(tmp_path, monkeypatch):
+    from yt_dlp.utils import DownloadError
+
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "playlist", "title": "My List",
+        "webpage_url": "https://x.test/playlist?list=PL1",
+        "entries": [{"title": "good one", "url": "https://x.test/1"},
+                    {"title": "bad one", "url": "https://x.test/2"},
+                    {"title": "last one", "url": "https://x.test/3"}]},
+        raising=False)
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix=""):
+        if item_label == "bad one":
+            raise DownloadError("HTTP Error 429: Too Many Requests")
+        return [{"title": item_label}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    results, failed = dl.run("https://x.test/playlist?list=PL1", tmp_path, "best")
+
+    assert len(results) == 2                    # good one + last one
+    assert failed == [("bad one", "The site is rate limiting requests.")]
+
+
+def test_run_numbers_follow_playlist_positions_after_resume(tmp_path,
+                                                             monkeypatch):
+    # Item 1 is already downloaded; the remaining items must keep their
+    # global playlist numbers (02, 03), not renumber from 01.
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    target = tmp_path / "My List"
+    target.mkdir()
+    (target / "01 - first.mp4").write_bytes(b"x")
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "playlist", "title": "My List",
+        "webpage_url": "https://x.test/playlist?list=PL1",
+        "entries": [{"title": "first", "url": "https://x.test/1"},
+                    {"title": "second", "url": "https://x.test/2"},
+                    {"title": "third", "url": "https://x.test/3"}]},
+        raising=False)
+    recorded: list[str] = []
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix=""):
+        recorded.append(number_prefix)
+        return [{"title": item_label}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    dl.run("https://x.test/playlist?list=PL1", tmp_path, "best")
+
+    assert recorded == ["02 - ", "03 - "]
+
+
+def test_run_single_video_failure_propagates(tmp_path, monkeypatch):
+    from yt_dlp.utils import DownloadError
+
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "video", "title": "Hello Video",
+        "webpage_url": "https://x.test/watch?v=1"}, raising=False)
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix=""):
+        raise DownloadError("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    with pytest.raises(DownloadError):
+        dl.run("https://x.test/watch?v=1", tmp_path, "best")
+
+
+def test_run_single_video_stays_in_top_folder(tmp_path, monkeypatch):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "video", "title": "Hello Video",
+        "webpage_url": "https://x.test/watch?v=1"}, raising=False)
+    recorded: list[tuple, ] = []
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix=""):
+        recorded.append((outdir, number_prefix))
+        return [{"title": "Hello Video"}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    dl.run("https://x.test/watch?v=1", tmp_path, "best")
+
+    assert recorded == [(tmp_path, "")]
+
+
 def test_run_skips_existing_single_video(tmp_path, monkeypatch):
     (tmp_path / "Hello Video.mp4").write_bytes(b"x")
     dl = engine.Downloader.__new__(engine.Downloader)
@@ -537,7 +735,7 @@ def test_run_skips_existing_single_video(tmp_path, monkeypatch):
         return [{"title": "Hello Video"}]
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
-    assert dl.run("https://x.test/watch?v=1", tmp_path, "best") == []
+    assert dl.run("https://x.test/watch?v=1", tmp_path, "best") == ([], [])
     assert calls["download"] == 0
 
 
@@ -572,9 +770,10 @@ def test_run_downloads_when_file_absent(tmp_path, monkeypatch):
         "webpage_url": "https://x.test/watch?v=1"}, raising=False)
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label=""):
+                      item_label="", number_prefix=""):
         return [{"title": "Hello Video"}]
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
-    result = dl.run("https://x.test/watch?v=1", tmp_path, "best")
-    assert result == [{"title": "Hello Video"}]
+    results, failed = dl.run("https://x.test/watch?v=1", tmp_path, "best")
+    assert results == [{"title": "Hello Video"}]
+    assert failed == []

@@ -127,6 +127,10 @@ class _ProgressReporter:
                             f"{output.truncate(self.title)}")
                 self._done_printed = True
             return
+        if status == "item_failed":
+            output.line(f"{output._FAIL} Failed: "
+                        f"{output.truncate(label or self.title)}")
+            return
         if not total:
             return  # unknown size: skip noisy intermediate lines
         percent = current * 100.0 / total
@@ -181,7 +185,8 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
 
     try:
         reporter = _ProgressReporter(title)
-        results = downloader.run(url, outdir, quality, progress_fn=reporter)
+        results, failures = downloader.run(url, outdir, quality,
+                                           progress_fn=reporter)
     except KeyboardInterrupt:
         output.line()
         output.line("Download interrupted.")
@@ -196,14 +201,20 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
             reason = hint
         return _fail(headline, reason, verbose=args.verbose, exc=exc)
 
-    if not results:
+    if not results and not failures:
         output.line(f"{output._OK} Already downloaded: nothing new to fetch.")
         return 0
 
     downloaded = len(results)
-    output.summary(downloaded, 0, 0, [])
-    output.line(f"Saved to: {outdir}")
-    return 0
+    failed_names = [name for name, _headline in failures]
+    output.summary(downloaded, 0, len(failures), failed_names)
+    if failures:
+        output.line()
+        output.line("Tip: re-run the same command to retry only the failed "
+                    "items.")
+    saved_to = getattr(downloader, "last_target_dir", None) or outdir
+    output.line(f"Saved to: {saved_to}")
+    return 1 if failures else 0
 
 
 def interactive() -> int:
