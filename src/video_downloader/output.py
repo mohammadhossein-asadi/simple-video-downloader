@@ -11,10 +11,14 @@ import sys
 
 
 def _safe_reconfigure() -> None:
-    """Never crash on legacy console encodings (e.g. Windows cp1252)."""
+    """Force UTF-8 output and never crash on unencodable characters.
+
+    Modern terminals (including Windows Terminal) expect UTF-8; without
+    this, piped output on Windows degrades non-Latin titles to '????'.
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError, OSError):
             pass
 
