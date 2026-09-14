@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from video_downloader.output import download_progress, truncate
 
-ProgressFn = Callable[[str, int, int | None], None]
+ProgressFn = Callable[..., None]
 
 
 class _QuietLogger:
@@ -137,16 +137,25 @@ class Downloader:
                     downloaded.append(info)
         return downloaded
 
-    def already_downloaded(self, outdir: Path, title: str) -> bool:
-        """True when a file for *title* already exists in *outdir*."""
+    AUDIO_EXTS = {".mp3", ".m4a", ".opus", ".ogg", ".wav", ".aac"}
+    VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv", ".m4v"}
+
+    def already_downloaded(self, outdir: Path, title: str,
+                           quality: str = "best") -> bool:
+        """True when a matching media file for *title* exists in *outdir*.
+
+        Audio-only runs look for audio files, video runs for video files,
+        so downloading one does not shadow the other.
+        """
         outdir = Path(outdir)
         if not outdir.is_dir():
             return False
         from yt_dlp.utils import sanitize_filename
 
         stem = sanitize_filename(title, restricted=False)
-        return any(outdir.glob(f"{stem}.*"))
-    already_downloaded.__doc__ = already_downloaded.__doc__  # keep docstring stable
+        extensions = self.AUDIO_EXTS if quality == "audio" else self.VIDEO_EXTS
+        return any(path.suffix.lower() in extensions
+                   for path in outdir.glob(f"{stem}.*"))
 
     def run(self, url: str, outdir: Path, quality: str = "best",
             progress_fn: ProgressFn | None = None) -> list[dict]:
@@ -159,7 +168,7 @@ class Downloader:
 
         if kind == "video":
             title = str(info.get("title") or "")
-            if title and self.already_downloaded(outdir, title):
+            if title and self.already_downloaded(outdir, title, quality):
                 return []
             items = [(None, url)]
         elif kind == "empty":
@@ -173,7 +182,7 @@ class Downloader:
                 if not entry_url:
                     continue
                 title = entry.get("title") or "Unknown title"
-                if self.already_downloaded(outdir, title):
+                if self.already_downloaded(outdir, title, quality):
                     continue
                 items.append((title, entry_url))
 
@@ -185,7 +194,7 @@ class Downloader:
             if len(items) > 1:
                 print(f"\n[{index}/{len(items)}]", flush=True)
             if progress_fn is not None:
-                progress_fn("item", index, len(items))
+                progress_fn("item", index, len(items), title or "")
             try:
                 downloaded.extend(self.download(item_url, outdir, quality,
                                                 progress_fn, item_label=title or ""))

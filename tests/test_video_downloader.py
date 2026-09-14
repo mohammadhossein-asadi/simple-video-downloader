@@ -65,6 +65,16 @@ def test_classify_channel():
     assert urlinfo.classify(result) == ("channel", 3)
 
 
+def test_classify_playlist_with_channel_metadata_stays_playlist():
+    # Playlists carry channel_id in their metadata; only the URL shape
+    # decides the kind, so this must stay a playlist.
+    result = {"_type": "playlist", "title": "My List",
+              "webpage_url": "https://www.youtube.com/playlist?list=PL1",
+              "channel_id": "UCabc123",
+              "entries": [{"title": "a"}, {"title": "b"}]}
+    assert urlinfo.classify(result) == ("playlist", 2)
+
+
 def test_classify_empty_playlist():
     result = {"_type": "playlist", "entries": [],
               "webpage_url": "https://x.test/playlist?list=PL1"}
@@ -493,6 +503,26 @@ def test_already_downloaded_missing_dir(tmp_path):
     assert dl.already_downloaded(tmp_path / "nope", "My Video") is False
 
 
+def test_already_downloaded_audio_does_not_shadow_video(tmp_path):
+    (tmp_path / "My Video.webm").write_bytes(b"x")
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is True
+    assert dl.already_downloaded(tmp_path, "My Video", "audio") is False
+
+
+def test_already_downloaded_video_does_not_shadow_audio(tmp_path):
+    (tmp_path / "My Video.mp3").write_bytes(b"x")
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.already_downloaded(tmp_path, "My Video", "audio") is True
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is False
+
+
+def test_already_downloaded_ignores_partial_files(tmp_path):
+    (tmp_path / "My Video.f401.mp4.part").write_bytes(b"x")
+    dl = engine.Downloader.__new__(engine.Downloader)
+    assert dl.already_downloaded(tmp_path, "My Video", "best") is False
+
+
 def test_run_skips_existing_single_video(tmp_path, monkeypatch):
     (tmp_path / "Hello Video.mp4").write_bytes(b"x")
     dl = engine.Downloader.__new__(engine.Downloader)
@@ -509,6 +539,30 @@ def test_run_skips_existing_single_video(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
     assert dl.run("https://x.test/watch?v=1", tmp_path, "best") == []
     assert calls["download"] == 0
+
+
+def test_progress_reporter_throttles_to_ten_percent_steps(capsys):
+    reporter = cli._ProgressReporter("My Video")
+    reporter("downloading", 50, 1000)     # 5%  -> no line
+    assert capsys.readouterr().out == ""
+    reporter("downloading", 100, 1000)    # 10% -> one line
+    first = capsys.readouterr().out
+    assert "10.0%" in first
+    reporter("downloading", 150, 1000)    # 15% -> same bucket, no line
+    assert capsys.readouterr().out == ""
+    reporter("downloading", 990, 1000)    # 99% -> one line
+    assert "99.0%" in capsys.readouterr().out
+
+
+def test_progress_reporter_item_resets_and_done_prints_once(capsys):
+    reporter = cli._ProgressReporter("First")
+    reporter("done", 100, 100)
+    assert "Finished: First" in capsys.readouterr().out
+    reporter("done", 100, 100)            # not printed twice
+    assert capsys.readouterr().out == ""
+    reporter("item", 2, 5, "Second Video")
+    reporter("done", 10, 10)
+    assert "Finished: Second Video" in capsys.readouterr().out
 
 
 def test_run_downloads_when_file_absent(tmp_path, monkeypatch):

@@ -44,7 +44,8 @@ def classify(result: dict) -> tuple[str, int | None]:
         entries = None
 
     webpage_url = str(result.get("webpage_url") or "")
-    is_channel = bool(result.get("channel_id")) or looks_like_channel(webpage_url)
+    # Only the URL shape decides: playlists also carry channel_id metadata.
+    is_channel = looks_like_channel(webpage_url)
 
     if entries is None:
         return ("video", None)

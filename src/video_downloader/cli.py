@@ -105,6 +105,37 @@ def _probe_or_fail(downloader: engine.Downloader, url: str,
     return info, 0
 
 
+class _ProgressReporter:
+    """Throttled progress printing: one line per ~10% step, no spam."""
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+        self._last_bucket = 0  # first line appears at >= 10%
+        self._done_printed = False
+
+    def __call__(self, status: str, current: int, total: int | None,
+                 label: str | None = None) -> None:
+        if status == "item":
+            if label:
+                self.title = label
+            self._last_bucket = 0
+            self._done_printed = False
+            return
+        if status == "done":
+            if not self._done_printed:
+                output.line(f"{output._OK} Finished: "
+                            f"{output.truncate(self.title)}")
+                self._done_printed = True
+            return
+        if not total:
+            return  # unknown size: skip noisy intermediate lines
+        percent = current * 100.0 / total
+        bucket = int(percent // 10)
+        if bucket > self._last_bucket:
+            self._last_bucket = bucket
+            output.line(output.download_progress(self.title, current, total))
+
+
 def run_download(args: argparse.Namespace, announce: bool = True) -> int:
     """Direct (non-interactive) download flow for a parsed URL.
 
@@ -149,7 +180,8 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
             output.line(f"{label}: {title}{size}")
 
     try:
-        results = downloader.run(url, outdir, quality)
+        reporter = _ProgressReporter(title)
+        results = downloader.run(url, outdir, quality, progress_fn=reporter)
     except KeyboardInterrupt:
         output.line()
         output.line("Download interrupted.")
