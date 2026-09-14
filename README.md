@@ -36,15 +36,25 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 ## Installation
 
+Requires [Python 3.10+](https://www.python.org/downloads/) and
+[ffmpeg](https://ffmpeg.org) on your PATH (see below).
+
+Install directly from this repository:
+
 ```bash
-pip install simple-video-downloader
+pip install git+https://github.com/mohammadhossein-asadi/simple-video-downloader.git
 ```
 
-Or from a clone of this repository:
+Or from a local clone:
 
 ```bash
+git clone https://github.com/mohammadhossein-asadi/simple-video-downloader
+cd simple-video-downloader
 pip install .
 ```
+
+The `video-downloader` command is then available in any terminal. To
+update later, re-run the same `pip install` command.
 
 ## Usage
 
