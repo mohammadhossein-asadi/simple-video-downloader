@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+
+# Downloaded media and partial files
+downloads/
+*.part
+*.ytdl
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Local assistant workspace
+.freebuff/
