@@ -140,6 +140,18 @@ def build_options(outdir: Path, quality: str = "best",
     return options
 
 
+def _has_result_files(info: dict) -> bool:
+    """True when yt-dlp actually produced files for this item.
+
+    Items skipped by the download archive come back without a
+    ``requested_downloads`` payload and write nothing; counting them as
+    downloads would misreport re-runs.
+    """
+    if info.get("requested_downloads"):
+        return True
+    return bool(info.get("filepath") or info.get("filename"))
+
+
 def _make_hook(progress_fn: ProgressFn) -> Callable[[dict], None]:
     """Adapt a yt-dlp progress hook to our ProgressFn signature."""
 
@@ -222,9 +234,11 @@ class Downloader:
             if isinstance(info, dict):
                 if info.get("_type") == "playlist":
                     for entry in info.get("entries") or []:
-                        if entry:
+                        if entry and _has_result_files(entry):
                             downloaded.append(entry)
-                else:
+                elif _has_result_files(info):
+                    # Single-item downloads (how playlist entries arrive)
+                    # are dropped too when the archive skipped them.
                     downloaded.append(info)
         return downloaded
 

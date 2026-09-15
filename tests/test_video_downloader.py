@@ -415,6 +415,46 @@ def test_run_single_video_has_no_archive(tmp_path, monkeypatch):
     assert recorded["archive"] is None
 
 
+def test_download_drops_archive_skipped_entries(tmp_path):
+    """Entries skipped by the download archive must not count as downloads."""
+    dl = engine.Downloader()
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            if url.endswith("single"):
+                # Playlist items arrive as single results; an archived-away
+                # item carries no requested_downloads payload.
+                return {"title": "archived-away", "requested_downloads": None}
+            return {"_type": "playlist", "entries": [
+                {"title": "kept",
+                 "requested_downloads": [{"filepath": "x.mp4"}]},
+                {"title": "archived-away", "requested_downloads": None}]}
+
+    dl._ydl_cls = FakeYDL
+    out = dl.download("https://x.test/p", tmp_path)
+    assert [entry["title"] for entry in out] == ["kept"]
+    out_single = dl.download("https://x.test/single", tmp_path)
+    assert out_single == []
+
+
+def test_has_result_files_detection():
+    assert engine._has_result_files(
+        {"requested_downloads": [{"filepath": "a.mp4"}]}) is True
+    assert engine._has_result_files({"filepath": "a.mp4"}) is True
+    assert engine._has_result_files({"filename": "a.mp4"}) is True
+    assert engine._has_result_files({"requested_downloads": None}) is False
+    assert engine._has_result_files({}) is False
+
+
 # --------------------------------------------------------------------------
 # Subtitles
 # --------------------------------------------------------------------------
