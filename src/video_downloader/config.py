@@ -9,8 +9,13 @@ API below). CLI flags always take precedence over saved values, and
 from __future__ import annotations
 
 import os
-import tomllib
+import sys
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10
+    import tomli as tomllib
 
 KNOWN_KEYS = ("quality", "output", "proxy")
 
