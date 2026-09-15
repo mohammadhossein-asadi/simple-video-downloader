@@ -87,8 +87,27 @@ def _fmt_size(num_bytes: int | None) -> str:
     return "unknown size"
 
 
+def _fmt_speed(speed: float | None) -> str:
+    """Human-readable speed, e.g. ``4.2 MB/s``."""
+    if not speed or speed <= 0:
+        return ""
+    return f"{_fmt_size(int(speed))}/s"
+
+
+def _fmt_eta(seconds: float | None) -> str:
+    """Human-readable countdown, e.g. ``00:18`` or ``1:02:30``."""
+    if not seconds or seconds <= 0:
+        return ""
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
 def progress_line(percent: float | None, title: str = "",
-                  speed: str = "", eta: str = "") -> str:
+                  size: str = "", speed: str = "", eta: str = "") -> str:
     """Render one progress line: bar, percent, size, speed, ETA."""
     if percent is None:
         prefix = "Downloading: " + truncate(title) if title else "Downloading..."
@@ -99,6 +118,8 @@ def progress_line(percent: float | None, title: str = "",
     parts = [f"[{bar}] {percent:5.1f}%"]
     if title:
         parts.append(truncate(title))
+    if size:
+        parts.append(size)
     if speed:
         parts.append(speed)
     if eta:
@@ -106,12 +127,15 @@ def progress_line(percent: float | None, title: str = "",
     return "  ".join(parts)
 
 
-def download_progress(title: str, transferred: int, total: int | None) -> str:
-    """Build a progress line from byte counts."""
+def download_progress(title: str, transferred: int, total: int | None,
+                      speed: float | None = None,
+                      eta: float | None = None) -> str:
+    """Build a progress line from byte counts (+ optional speed/ETA)."""
     if not total:
         return progress_line(None, title)
     percent = min(100.0, transferred * 100.0 / total)
-    return progress_line(percent, title, _fmt_size(transferred), "")
+    return progress_line(percent, title, _fmt_size(transferred),
+                         _fmt_speed(speed) or "", _fmt_eta(eta) or "")
 
 
 def is_interactive() -> bool:

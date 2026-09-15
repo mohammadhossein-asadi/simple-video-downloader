@@ -1,5 +1,7 @@
 # Simple Video Downloader
 
+[![CI](https://github.com/mohammadhossein-asadi/simple-video-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/mohammadhossein-asadi/simple-video-downloader/actions/workflows/ci.yml)
+
 A simple, friendly command-line tool to download videos, playlists, and channels. No configuration, no accounts, no AI - just paste a URL.
 
 Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
@@ -13,6 +15,12 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 - Quality menu with **Best** as the safe default (plus 1080p / 720p / 480p)
 - Automatic resume of interrupted downloads and safe skip of existing files
 - Live progress bars with size, speed, and ETA
+- Optional subtitle downloads (`--subs en,fa`) saved next to the video
+- `--list` preview: see the available qualities before downloading
+- Playlists and channels remember finished items in a hidden archive
+  file, so re-runs never fetch the same video twice
+- Optional one-keypress "remember these settings" (quality, folder,
+  proxy) with `--no-config` to ignore them for a run
 - Playlists and channels are organized into their own subfolder
   (`Downloads/<Playlist Title>/`) with numbered files (`01 - Title.mp4`)
   numbered by playlist position, stable across resumed runs
@@ -154,6 +162,12 @@ video-downloader "https://www.youtube.com/watch?v=VIDEO_ID" --cookies C:\path\co
 # Route through a VPN/proxy (local or remote)
 video-downloader "URL" --proxy 127.0.0.1:8080
 video-downloader "URL" --proxy socks5://127.0.0.1:1080
+
+# Subtitles saved next to the video
+video-downloader "URL" --subs en,fa
+
+# Preview the available qualities without downloading
+video-downloader "URL" --list
 ```
 
 ### Restricted or private content
@@ -210,7 +224,8 @@ suggests `--proxy` automatically.
 ```text
 usage: video-downloader [-h] [-o DIR] [-q {best,1080p,720p,480p,audio}] [-a]
                         [--cookies-from-browser BROWSER] [--cookies FILE]
-                        [--proxy PROXY] [--verbose] [-V]
+                        [--proxy PROXY] [--subs LANGS] [--list] [--no-config]
+                        [--verbose] [-V]
                         [url]
 
 Simple Video Downloader - download videos, playlists, and channels with one
@@ -234,6 +249,11 @@ options:
                         an alternative to --cookies-from-browser
   --proxy PROXY         route downloads through a proxy, e.g. 127.0.0.1:8080
                         or socks5://127.0.0.1:1080
+  --subs LANGS          download subtitles, e.g. en,fa (saved next to the
+                        video)
+  --list                show the available qualities for the URL and exit
+                        without downloading
+  --no-config           ignore the saved settings file for this run
   --verbose             show detailed error information
   -V, --version         show program's version number and exit
 
@@ -266,7 +286,7 @@ Playlist: Example Playlist (12 videos)
 
 [3/12]
 Downloading: Example Video #3
-[██████████████░░░░░░░░░░░░░░] 71.0%  245.0 MB
+[██████████████░░░░░░░░░░░░░░] 71.0%  245.0 MB  4.2 MB/s  ETA 00:18
 ```
 
 Files are saved into a folder named after the playlist or channel, with
@@ -293,10 +313,48 @@ Playlist completed.
 Simply re-run the same command afterwards: finished files are skipped,
 so only the missing items are fetched - numbering stays stable.
 
+## Subtitles
+
+Pass `--subs` with a comma-separated language list to save subtitles
+next to the video (same folder and numbering rules):
+
+```bash
+video-downloader "URL" --subs en,fa
+```
+
+If the site provides no manual subtitle for a language, automatically
+generated ones are used as a fallback.
+
+## Previewing qualities
+
+`--list` shows what a URL offers without downloading anything:
+
+```text
+$ video-downloader "URL" --list
+Title: Example Video
+Available qualities: 1080p, 720p, 480p, 360p
+```
+
+In interactive mode the quality menu is annotated with the real
+available heights when they are known.
+
+## Remembered settings
+
+After a successful interactive run the tool may ask *"Remember these
+settings for future runs?"* - answering yes stores quality, output
+folder, and proxy in a small file (`%%APPDATA%%\video-downloader\config.toml`
+on Windows, `~/.config/video-downloader/config.toml` elsewhere). The
+file is only ever created by explicit consent. Command-line flags
+always override saved settings, and `--no-config` ignores the file for
+one run.
+
 ## Interrupted downloads
 
 Partial downloads (`.part` files) are kept. Re-run the same command and
 the download resumes where it stopped instead of starting over.
+Finished playlist/channel items are also recorded in a hidden
+`.downloaded-archive` file inside their folder, so later runs skip them
+even if the files were renamed or moved.
 
 ## Troubleshooting
 

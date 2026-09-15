@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from video_downloader import cli, engine, output, urlinfo
+from video_downloader import cli, config, engine, output, urlinfo
 from video_downloader.errors import (friendly_error, is_auth_headline,
                                      missing_dependency_hint)
 
@@ -317,6 +317,300 @@ def test_network_failure_without_hint_when_proxy_given(fake_engine, capsys,
     assert "--proxy HOST:PORT" not in capsys.readouterr().out
 
 
+# --------------------------------------------------------------------------
+# Speed / ETA formatting
+# --------------------------------------------------------------------------
+
+def test_fmt_speed():
+    assert output._fmt_speed(4_400_000) == "4.2 MB/s"
+    assert output._fmt_speed(520_000) == "507.8 KB/s"
+    assert output._fmt_speed(None) == ""
+    assert output._fmt_speed(0) == ""
+
+
+def test_fmt_eta():
+    assert output._fmt_eta(18) == "00:18"
+    assert output._fmt_eta(3750) == "1:02:30"
+    assert output._fmt_eta(None) == ""
+    assert output._fmt_eta(0) == ""
+
+
+def test_download_progress_includes_speed_and_eta():
+    text = output.download_progress("Song", 1000, 2000,
+                                    speed=4_400_000, eta=18)
+    assert "4.2 MB/s" in text and "ETA 00:18" in text
+    # Absent speed/ETA keep the old rendering.
+    plain = output.download_progress("Song", 1000, 2000)
+    assert "4.2 MB/s" not in plain and "ETA" not in plain
+
+
+def test_hook_forwards_speed_and_eta_as_keywords():
+    seen = []
+    hook = engine._make_hook(lambda status, t, total, **kw: seen.append(kw))
+    hook({"status": "downloading", "downloaded_bytes": 1,
+          "total_bytes": 2, "speed": 1000.0, "eta": 5})
+    assert seen == [{"speed": 1000.0, "eta": 5}]
+
+
+def test_hook_without_speed_stays_backward_compatible():
+    seen = []
+    hook = engine._make_hook(lambda status, t, total: seen.append((t, total)))
+    hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 2})
+    assert seen == [(1, 2)]
+
+
+def test_progress_reporter_passes_speed_and_eta(capsys):
+    reporter = cli._ProgressReporter("My Video")
+    reporter("downloading", 1000, 1000, speed=1_048_576, eta=30)
+    out = capsys.readouterr().out
+    assert "1.0 MB/s" in out and "ETA 00:30" in out
+
+
+# --------------------------------------------------------------------------
+# Download archive for playlists/channels
+# --------------------------------------------------------------------------
+
+def test_build_options_download_archive(tmp_path):
+    opts = engine.build_options(tmp_path, "best",
+                                download_archive=tmp_path / "archive")
+    assert opts["download_archive"] == str(tmp_path / "archive")
+    assert "download_archive" not in engine.build_options(tmp_path, "best")
+
+
+def test_run_playlist_passes_category_archive(tmp_path, monkeypatch):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "playlist", "title": "My List",
+        "webpage_url": "https://x.test/playlist?list=PL1",
+        "entries": [{"title": "a", "url": "https://x.test/1"}]},
+        raising=False)
+    recorded: dict = {}
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix="", archive=None):
+        recorded["archive"] = archive
+        return [{"title": item_label}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    dl.run("https://x.test/playlist?list=PL1", tmp_path, "best")
+    assert recorded["archive"] == tmp_path / "My List" / ".downloaded-archive"
+
+
+def test_run_single_video_has_no_archive(tmp_path, monkeypatch):
+    dl = engine.Downloader.__new__(engine.Downloader)
+    dl.last_target_dir = None
+    monkeypatch.setattr(dl, "probe", lambda url: {
+        "_type": "video", "title": "Hello Video",
+        "webpage_url": "https://x.test/watch?v=1"}, raising=False)
+    recorded: dict = {}
+
+    def fake_download(url, outdir, quality="best", progress_fn=None,
+                      item_label="", number_prefix="", archive=None):
+        recorded["archive"] = archive
+        return [{"title": item_label}]
+
+    monkeypatch.setattr(dl, "download", fake_download, raising=False)
+    dl.run("https://x.test/watch?v=1", tmp_path, "best")
+    assert recorded["archive"] is None
+
+
+# --------------------------------------------------------------------------
+# Subtitles
+# --------------------------------------------------------------------------
+
+def test_build_options_subtitles(tmp_path):
+    opts = engine.build_options(tmp_path, "best", subtitles="en, fa")
+    assert opts["writesubtitles"] is True
+    assert opts["subtitleslangs"] == ["en", "fa"]
+    assert opts["writeautomaticsub"] is True
+    assert "writesubtitles" not in engine.build_options(tmp_path, "best")
+
+
+def test_downloader_passes_subs_to_options(tmp_path):
+    dl = engine.Downloader(subs="en,fa")
+    built = engine.build_options(tmp_path, "best", subtitles=dl.subs)
+    assert built["subtitleslangs"] == ["en", "fa"]
+
+
+# --------------------------------------------------------------------------
+# Opt-in config file
+# --------------------------------------------------------------------------
+
+def test_config_round_trip(tmp_path):
+    path = tmp_path / "config.toml"
+    config.save_config(path, {"quality": "720p", "output": "D:\\Videos",
+                              "proxy": "socks5://127.0.0.1:1080"})
+    loaded = config.load_config(path)
+    assert loaded == {"quality": "720p", "output": "D:\\Videos",
+                      "proxy": "socks5://127.0.0.1:1080"}
+
+
+def test_config_backslash_escaping(tmp_path):
+    """Windows paths must survive the TOML round trip."""
+    path = tmp_path / "config.toml"
+    config.save_config(path, {"output": "C:\\Users\\test\\Downloads"})
+    assert config.load_config(path)["output"] == "C:\\Users\\test\\Downloads"
+
+
+def test_config_ignores_unknown_and_non_string_keys(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('quality = "720p"\nevil = 42\nflag = true\n',
+                    encoding="utf-8")
+    loaded = config.load_config(path)
+    assert loaded == {"quality": "720p"}
+
+
+def test_config_missing_and_corrupt_files(tmp_path):
+    assert config.load_config(tmp_path / "missing.toml") == {}
+    corrupt = tmp_path / "broken.toml"
+    corrupt.write_text("quality = [unclosed", encoding="utf-8")
+    assert config.load_config(corrupt) == {}
+
+
+def test_config_save_skips_empty_values(tmp_path):
+    path = tmp_path / "config.toml"
+    config.save_config(path, {"quality": "720p", "output": "", "proxy": None})
+    assert config.load_config(path) == {"quality": "720p"}
+
+
+def test_apply_saved_settings_fills_unset_only(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    config.save_config(path, {"quality": "480p", "output": "D:\\V",
+                              "proxy": "127.0.0.1:9"})
+    monkeypatch.setattr(config, "config_path", lambda: path)
+
+    args = cli.build_parser().parse_args(["https://x.test/v"])
+    cli._apply_saved_settings(args)
+    assert args.quality == "480p"
+    assert args.output == "D:\\V"
+    assert args.proxy == "127.0.0.1:9"
+
+    # CLI flags always win over saved settings.
+    args2 = cli.build_parser().parse_args(
+        ["-q", "720p", "-o", "E:\\W", "--proxy", "1.2.3.4:5",
+         "https://x.test/v"])
+    cli._apply_saved_settings(args2)
+    assert args2.quality == "720p"
+    assert args2.output == "E:\\W"
+    assert args2.proxy == "1.2.3.4:5"
+
+
+def test_no_config_ignores_saved_settings(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    config.save_config(path, {"quality": "480p", "output": "D:\\V"})
+    monkeypatch.setattr(config, "config_path", lambda: path)
+
+    args = cli.build_parser().parse_args(["--no-config", "https://x.test/v"])
+    cli._apply_saved_settings(args)
+    assert args.quality == "best" and args.output is None
+
+
+def test_maybe_save_settings_respects_decline(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(config, "config_path", lambda: path)
+    monkeypatch.setattr(output, "is_interactive", lambda: True)
+    monkeypatch.setattr(output, "ask", lambda *a, **k: False)
+
+    args = cli.build_parser().parse_args(["https://x.test/v"])
+    cli._maybe_save_settings(args, "best")
+    assert not path.exists()
+
+
+def test_maybe_save_settings_writes_on_accept(monkeypatch, tmp_path, capsys):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(config, "config_path", lambda: path)
+    monkeypatch.setattr(output, "is_interactive", lambda: True)
+    monkeypatch.setattr(output, "ask", lambda *a, **k: True)
+
+    args = cli.build_parser().parse_args(
+        ["-o", "D:\\Downloads", "https://x.test/v"])
+    cli._maybe_save_settings(args, "720p")
+    loaded = config.load_config(path)
+    assert loaded == {"quality": "720p", "output": "D:\\Downloads"}
+
+
+# --------------------------------------------------------------------------
+# --list quality preview
+# --------------------------------------------------------------------------
+
+def test_available_heights_from_probe():
+    info = {"_type": "video", "title": "t",
+            "formats": [{"height": 1080, "vcodec": "avc1"},
+                        {"height": 720, "vcodec": "avc1"},
+                        {"height": 480, "vcodec": None},          # audio-only fmt
+                        {"height": 1080, "vcodec": "avc1"},       # duplicate
+                        {"vcodec": "none"}]}                      # no height
+    assert cli.available_heights(info) == [480, 720, 1080]
+
+
+def test_format_list_table_video_and_playlist():
+    video = cli.format_list_table(
+        {"_type": "video", "title": "My Video",
+         "formats": [{"height": 720, "vcodec": "avc1"}]})
+    assert "My Video" in video[0] and "720p" in " ".join(video)
+
+    playlist = cli.format_list_table(
+        {"_type": "playlist", "title": "My List",
+         "entries": [{"title": "a"}, {"title": "b"}]})
+    assert "Items: 2" in " ".join(playlist)
+
+
+def test_parser_list_and_no_config_flags():
+    args = cli.build_parser().parse_args(["--list", "https://x.test/v"])
+    assert args.list_only is True
+    args2 = cli.build_parser().parse_args(["--no-config", "https://x.test/v"])
+    assert args2.no_config is True
+
+
+def test_list_only_mode_prints_and_exits_zero(fake_engine, capsys, tmp_path,
+                                              monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = {
+        "_type": "video", "title": "Hello Video",
+        "webpage_url": "https://x.test/watch?v=1",
+        "formats": [{"height": 1080, "vcodec": "avc1"},
+                    {"height": 720, "vcodec": "avc1"}]}
+
+    args = cli.build_parser().parse_args(["--list", "https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 0
+    out = capsys.readouterr().out
+    assert "Available qualities: 1080p, 720p" in out
+    assert "Downloaded:" not in out          # nothing was downloaded
+
+
+def test_list_only_mode_downloads_nothing_for_playlist(fake_engine, capsys,
+                                                       tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = {"_type": "playlist", "title": "L",
+                              "webpage_url": "https://x.test/p",
+                              "entries": [{"title": "a"}]}
+    ran = {"called": False}
+
+    class Guard(FakeDownloader):
+        def run(self, url, outdir, quality="best", progress_fn=None):
+            ran["called"] = True
+            return ([], [])
+
+    monkeypatch.setattr(engine, "Downloader", Guard)
+    args = cli.build_parser().parse_args(["--list", "https://x.test/p"])
+    assert cli.run_download(args) == 0
+    assert ran["called"] is False
+    assert "Items: 1" in capsys.readouterr().out
+
+
+def test_annotate_quality_menu_with_real_heights():
+    options = dict(cli._annotate_quality_menu([360, 720]))
+    assert "720p (best available: 720p)" in options["720p"]
+    # A capped entry shows the best height actually reachable below it.
+    assert "1080p (best available: 720p)" in options["1080p"]
+    # No format data -> unchanged labels.
+    plain = dict(cli._annotate_quality_menu([]))
+    assert plain["1080p"] == "1080p"
+
+
 def test_missing_dependency_hint():
     exc = ModuleNotFoundError("No module named 'yt_dlp'")
     hint = missing_dependency_hint(exc)
@@ -329,10 +623,12 @@ def test_missing_dependency_hint():
 # --------------------------------------------------------------------------
 
 def test_progress_line_renders_bar_and_percent():
-    text = output.progress_line(87.0, "My Video", "4.2 MB/s", "00:18")
+    text = output.progress_line(87.0, "My Video", "245.0 MB",
+                                "4.2 MB/s", "00:18")
     assert "87.0%" in text
     assert "█" in text and "░" in text
-    assert "My Video" in text and "4.2 MB/s" in text and "ETA 00:18" in text
+    assert "My Video" in text and "245.0 MB" in text
+    assert "4.2 MB/s" in text and "ETA 00:18" in text
 
 
 def test_progress_line_bounds():
@@ -466,7 +762,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.build_parser().parse_args(["--version"])
     assert excinfo.value.code == 0
-    assert "1.3.0" in capsys.readouterr().out
+    assert "1.4.0" in capsys.readouterr().out
 
 
 def test_help_flag(capsys):
@@ -885,8 +1181,8 @@ def test_run_routes_playlist_into_numbered_subfolder(tmp_path, monkeypatch):
     recorded: list[tuple, ] = []
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
-        recorded.append((outdir, number_prefix))
+                      item_label="", number_prefix="", archive=None):
+        recorded.append((outdir, number_prefix, archive))
         return [{"title": item_label}]
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
@@ -895,7 +1191,8 @@ def test_run_routes_playlist_into_numbered_subfolder(tmp_path, monkeypatch):
     target = tmp_path / "My List"
     assert dl.last_target_dir == target
     assert target.is_dir()
-    assert recorded == [(target, "01 - "), (target, "02 - ")]
+    archive = target / ".downloaded-archive"
+    assert recorded == [(target, "01 - ", archive), (target, "02 - ", archive)]
     assert len(results) == 2
     assert failed == []
 
@@ -914,7 +1211,7 @@ def test_run_playlist_continues_past_failed_items(tmp_path, monkeypatch):
         raising=False)
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
+                      item_label="", number_prefix="", archive=None):
         if item_label == "bad one":
             raise DownloadError("HTTP Error 429: Too Many Requests")
         return [{"title": item_label}]
@@ -945,7 +1242,7 @@ def test_run_numbers_follow_playlist_positions_after_resume(tmp_path,
     recorded: list[str] = []
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
+                      item_label="", number_prefix="", archive=None):
         recorded.append(number_prefix)
         return [{"title": item_label}]
 
@@ -965,7 +1262,7 @@ def test_run_single_video_failure_propagates(tmp_path, monkeypatch):
         "webpage_url": "https://x.test/watch?v=1"}, raising=False)
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
+                      item_label="", number_prefix="", archive=None):
         raise DownloadError("HTTP Error 429: Too Many Requests")
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
@@ -982,14 +1279,14 @@ def test_run_single_video_stays_in_top_folder(tmp_path, monkeypatch):
     recorded: list[tuple, ] = []
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
-        recorded.append((outdir, number_prefix))
+                      item_label="", number_prefix="", archive=None):
+        recorded.append((outdir, number_prefix, archive))
         return [{"title": "Hello Video"}]
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)
     dl.run("https://x.test/watch?v=1", tmp_path, "best")
 
-    assert recorded == [(tmp_path, "")]
+    assert recorded == [(tmp_path, "", None)]
 
 
 def test_run_skips_existing_single_video(tmp_path, monkeypatch):
@@ -1001,7 +1298,7 @@ def test_run_skips_existing_single_video(tmp_path, monkeypatch):
     calls = {"download": 0}
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label=""):
+                      item_label="", number_prefix="", archive=None):
         calls["download"] += 1
         return [{"title": "Hello Video"}]
 
@@ -1041,7 +1338,7 @@ def test_run_downloads_when_file_absent(tmp_path, monkeypatch):
         "webpage_url": "https://x.test/watch?v=1"}, raising=False)
 
     def fake_download(url, outdir, quality="best", progress_fn=None,
-                      item_label="", number_prefix=""):
+                      item_label="", number_prefix="", archive=None):
         return [{"title": "Hello Video"}]
 
     monkeypatch.setattr(dl, "download", fake_download, raising=False)

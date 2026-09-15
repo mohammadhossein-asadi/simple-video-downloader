@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from video_downloader import __version__
+from video_downloader import config as settings_store
 from video_downloader import engine, output, urlinfo
 from video_downloader.errors import (friendly_error, is_auth_headline,
                                      is_network_error,
@@ -29,6 +30,79 @@ QUALITY_CHOICES = list(QUALITY_LABELS)
 
 BROWSERS = ("chrome", "firefox", "edge", "brave", "safari", "chromium",
             "opera", "vivaldi", "whale")
+
+
+def available_heights(info: dict) -> list[int]:
+    """Sorted video heights (p) from a probe result."""
+    heights = set()
+    for fmt in (info or {}).get("formats") or []:
+        height = fmt.get("height")
+        if isinstance(height, int) and height > 0 and fmt.get("vcodec") != "none":
+            heights.add(height)
+    return sorted(heights)
+
+
+def format_list_table(info: dict) -> list[str]:
+    """Render the ``--list`` quality preview for a probed item."""
+    rows = [f"Title: {output.truncate(str(info.get('title') or '?'))}"]
+    if (info or {}).get("_type") == "playlist":
+        entries = [e for e in info.get("entries") or [] if e]
+        rows.append(f"Items: {len(entries)}")
+        rows.append("(qualities are shown per video when downloading)")
+        return rows
+    heights = available_heights(info)
+    if heights:
+        rows.append("Available qualities: "
+                    + ", ".join(f"{h}p" for h in reversed(heights)))
+    else:
+        rows.append("Available qualities: unknown (no formats listed)")
+    return rows
+
+
+def _annotate_quality_menu(available: list[int]) -> list[tuple[str, str]]:
+    """Quality menu labels annotated with real heights when known."""
+    labels = dict(QUALITY_LABELS)
+    for value in ("1080p", "720p", "480p"):
+        height = int(value.rstrip("p"))
+        marks = [h for h in available if h <= height]
+        if available and marks:
+            labels[value] = f"{value} (best available: {max(marks)}p)"
+        elif available:
+            labels[value] = f"{value} (not available)"
+    return list(labels.items())
+
+
+def _apply_saved_settings(args: argparse.Namespace) -> None:
+    """Fill unset options from the saved settings file (opt-in).
+
+    CLI flags always win: only options still at their default are
+    replaced. ``--no-config`` skips the file entirely.
+    """
+    if getattr(args, "no_config", False):
+        return
+    saved = settings_store.load_config(settings_store.config_path())
+    if saved.get("quality") in QUALITY_LABELS and args.quality == "best" \
+            and not args.audio:
+        args.quality = saved["quality"]
+    if saved.get("output") and not args.output:
+        args.output = saved["output"]
+    if saved.get("proxy") and not getattr(args, "proxy", None):
+        args.proxy = saved["proxy"]
+
+
+def _maybe_save_settings(args: argparse.Namespace, quality: str) -> None:
+    """Offer to remember this run's settings (interactive terminals only)."""
+    if not output.is_interactive() or getattr(args, "no_config", False):
+        return
+    if not output.ask("Remember these settings for future runs?",
+                      default=False):
+        return
+    path = settings_store.save_config(settings_store.config_path(), {
+        "quality": quality,
+        "output": str(_outdir_from(args)),
+        "proxy": getattr(args, "proxy", None) or "",
+    })
+    output.line(f"Settings saved to {path}")
 
 
 def is_termux() -> bool:
@@ -96,6 +170,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--proxy", metavar="PROXY", default=None,
                         help="route downloads through a proxy, e.g. "
                              "127.0.0.1:8080 or socks5://127.0.0.1:1080")
+    parser.add_argument("--subs", metavar="LANGS", default=None,
+                        help="download subtitles, e.g. en,fa (saved next "
+                             "to the video)")
+    parser.add_argument("--list", action="store_true", dest="list_only",
+                        help="show the available qualities for the URL "
+                             "and exit without downloading")
+    parser.add_argument("--no-config", action="store_true", dest="no_config",
+                        help="ignore the saved settings file for this run")
     parser.add_argument("--verbose", action="store_true",
                         help="show detailed error information")
     parser.add_argument("-V", "--version", action="version",
@@ -250,7 +332,8 @@ class _ProgressReporter:
         self._done_printed = False
 
     def __call__(self, status: str, current: int, total: int | None,
-                 label: str | None = None) -> None:
+                 label: str | None = None, speed: float | None = None,
+                 eta: float | None = None) -> None:
         if status == "item":
             if label:
                 self.title = label
@@ -273,7 +356,8 @@ class _ProgressReporter:
         bucket = int(percent // 10)
         if bucket > self._last_bucket:
             self._last_bucket = bucket
-            output.line(output.download_progress(self.title, current, total))
+            output.line(output.download_progress(self.title, current, total,
+                                                 speed, eta))
 
 
 def run_download(args: argparse.Namespace, announce: bool = True) -> int:
@@ -288,10 +372,11 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         output.line("Expected something like: https://www.example.com/watch?v=...")
         return 1
 
-    if args.cookies or args.cookies_file or args.proxy:
+    if args.cookies or args.cookies_file or args.proxy or args.subs:
         downloader = engine.Downloader(cookies_from_browser=args.cookies,
                                        cookies_file=args.cookies_file,
-                                       proxy=args.proxy)
+                                       proxy=args.proxy,
+                                       subs=args.subs)
     else:
         downloader = engine.Downloader()
 
@@ -307,6 +392,12 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         info, code = _probe_or_fail(downloader, url, args.verbose, args=args)
         if info is None:
             return code
+
+    if args.list_only:
+        output.line()
+        for row in format_list_table(info):
+            output.line(row)
+        return 0
 
     return _download_probed(args, downloader, url, info, announce=announce)
 
@@ -383,6 +474,7 @@ def _download_probed(args: argparse.Namespace, downloader: engine.Downloader,
                     "items.")
     saved_to = getattr(downloader, "last_target_dir", None) or outdir
     output.line(f"Saved to: {saved_to}")
+    _maybe_save_settings(args, quality)
     return 1 if failures else 0
 
 
@@ -398,7 +490,9 @@ def interactive() -> int:
     args = argparse.Namespace(
         url=url, output=None, quality="best", audio=False, verbose=False,
         cookies=None, cookies_file=None, proxy=None,
+        subs=None, no_config=False, list_only=False,
     )
+    _apply_saved_settings(args)
 
     downloader = engine.Downloader()
     info, code = _probe_or_fail(downloader, url, verbose=False, args=args)
@@ -420,15 +514,16 @@ def interactive() -> int:
         size = f" ({count} videos)" if count else ""
         output.line(f"{label}: {title}{size}")
 
-    options = list(QUALITY_LABELS.items())
-    quality = output.choose(options, default="best")
+    options = _annotate_quality_menu(available_heights(info))
+    quality = output.choose(options, default=args.quality)
     args.quality = quality
 
     if is_termux() and not termux_storage_ready():
         output.line("Tip: run 'termux-setup-storage' once so downloads can "
                     "reach your phone's shared Downloads folder.")
 
-    target = output.prompt("Download folder", default=str(default_download_dir()))
+    target = output.prompt("Download folder",
+                           default=str(args.output or default_download_dir()))
     args.output = target
 
     return run_download(args, announce=False)
@@ -446,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
             output.line()
             output.line("Cancelled.")
             return 130
+    _apply_saved_settings(args)
     return run_download(args)
 
 

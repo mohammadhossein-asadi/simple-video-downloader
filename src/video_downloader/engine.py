@@ -64,14 +64,19 @@ def build_options(outdir: Path, quality: str = "best",
                   number_prefix: str = "",
                   cookies_from_browser: str | None = None,
                   cookies_file: str | Path | None = None,
-                  proxy: str | None = None) -> dict[str, Any]:
+                  proxy: str | None = None,
+                  subtitles: str | None = None,
+                  download_archive: str | Path | None = None) -> dict[str, Any]:
     """Build a safe, minimal yt-dlp option dict.
 
     *number_prefix* (e.g. ``"03 - "``) is prepended to filenames for
     numbered playlist/channel downloads. *cookies_from_browser* signs in
     using that browser's local cookies (for age-restricted content);
     *cookies_file* uses a Netscape-format cookies.txt file instead.
-    *proxy* routes all traffic through the given proxy URL.
+    *proxy* routes all traffic through the given proxy URL. *subtitles*
+    is a comma-separated language list (e.g. ``"en,fa"``). When
+    *download_archive* is set, yt-dlp records finished items there and
+    skips them on later runs.
     """
     outdir = Path(outdir).expanduser()
     options: dict[str, Any] = {
@@ -99,6 +104,14 @@ def build_options(outdir: Path, quality: str = "best",
     }
     if proxy:
         options["proxy"] = proxy
+    if subtitles:
+        langs = [lang.strip() for lang in subtitles.split(",") if lang.strip()]
+        if langs:
+            options["writesubtitles"] = True
+            options["subtitleslangs"] = langs
+            options["writeautomaticsub"] = True
+    if download_archive:
+        options["download_archive"] = str(download_archive)
     if cookies_file:
         options["cookiefile"] = str(cookies_file)
     elif cookies_from_browser:
@@ -138,7 +151,12 @@ def _make_hook(progress_fn: ProgressFn) -> Callable[[dict], None]:
         elif status in ("downloading",):
             transferred = data.get("downloaded_bytes") or 0
             total = data.get("total_bytes") or data.get("total_bytes_estimate")
-            progress_fn("downloading", transferred, total)
+            extra: dict = {}
+            if data.get("speed"):
+                extra["speed"] = data["speed"]
+            if data.get("eta") is not None:
+                extra["eta"] = data["eta"]
+            progress_fn("downloading", transferred, total, **extra)
         # "error" and others are handled through exceptions post-run.
 
     return hook
@@ -150,7 +168,8 @@ class Downloader:
     def __init__(self, options: dict[str, Any] | None = None,
                  cookies_from_browser: str | None = None,
                  cookies_file: str | Path | None = None,
-                 proxy: str | None = None) -> None:
+                 proxy: str | None = None,
+                 subs: str | None = None) -> None:
         from yt_dlp import YoutubeDL  # imported lazily; yt-dlp is a hard dep
 
         self._ydl_cls = YoutubeDL
@@ -158,6 +177,7 @@ class Downloader:
         self.cookies_from_browser = cookies_from_browser
         self.cookies_file = cookies_file
         self.proxy = normalize_proxy(proxy)
+        self.subs = subs
         self.last_target_dir: Path | None = None
 
     def probe(self, url: str) -> dict:
@@ -186,13 +206,16 @@ class Downloader:
     def download(self, url: str, outdir: Path, quality: str = "best",
                  progress_fn: ProgressFn | None = None,
                  item_label: str = "",
-                 number_prefix: str = "") -> list[dict]:
+                 number_prefix: str = "",
+                 archive: str | Path | None = None) -> list[dict]:
         """Download *url* into *outdir*; returns list of final file infos."""
         opts = build_options(outdir, quality, progress_fn,
                              number_prefix=number_prefix,
                              cookies_from_browser=self.cookies_from_browser,
                              cookies_file=self.cookies_file,
-                             proxy=self.proxy)
+                             proxy=self.proxy,
+                             subtitles=self.subs,
+                             download_archive=archive)
         downloaded: list[dict] = []
         with self._ydl_cls(opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -312,11 +335,13 @@ class Downloader:
             if progress_fn is not None:
                 progress_fn("item", index, len(items), title or "")
             prefix = f"{position:02d} - " if numbered else ""
+            archive = target / ".downloaded-archive" if numbered else None
             try:
                 downloaded.extend(self.download(item_url, target, quality,
                                                 progress_fn,
                                                 item_label=title or "",
-                                                number_prefix=prefix))
+                                                number_prefix=prefix,
+                                                archive=archive))
             except DownloadError as exc:
                 if not isolate:
                     raise
