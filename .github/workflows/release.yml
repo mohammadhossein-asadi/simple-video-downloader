@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + tags: the changelog needs them
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package and build tool
+        run: |
+          pip install .
+          pip install build pytest
+
+      - name: Run tests
+        run: pytest
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Extract release notes
+        run: |
+          python scripts/generate_changelog.py
+          python scripts/generate_changelog.py --notes-for "$GITHUB_REF_NAME" > notes.md
+          {
+            printf '## %s\n\n' "$GITHUB_REF_NAME"
+            cat notes.md
+            printf -- '---\n\n_See [CHANGELOG.md](%s/%s/blob/main/CHANGELOG.md) for the full history._\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY"
+          } > body.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file body.md \
+            dist/*

@@ -398,13 +398,21 @@ selection, safe default options, friendly error mapping, output
 rendering, default-directory resolution, CLI parsing, and the interactive
 and direct download flows (via a fake downloader - no network needed).
 
-### Regenerating the README
+### Regenerating the README and changelog
 
-`README.md` is generated - do not edit it by hand:
+Both are generated - do not edit them by hand:
 
 ```bash
-python scripts/generate_readme.py
+python scripts/generate_readme.py       # README.md (embeds real --help)
+python scripts/generate_changelog.py    # CHANGELOG.md (from git tags)
 ```
+
+## Releases
+
+Pushing a version tag (`v1.4.0`, ...) triggers the release workflow:
+it runs the test suite, builds the package, generates the release notes
+from the changelog, and publishes a GitHub release with the sdist and
+wheel attached.
 
 ## Project structure
 
@@ -420,9 +428,12 @@ simple-video-downloader/
 │   └── output.py       # banner, prompts, progress, summary
 ├── tests/              # pytest suite
 ├── scripts/
-│   └── generate_readme.py
+│   ├── generate_readme.py
+│   └── generate_changelog.py
+├── .github/workflows/  # CI + release automation
 ├── pyproject.toml
 ├── LICENSE
+├── CHANGELOG.md        # generated from the commit history
 └── README.md
 ```
 
