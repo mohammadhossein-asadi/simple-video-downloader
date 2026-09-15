@@ -35,6 +35,20 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
   the `bin` folder to your PATH)
 - **macOS:** `brew install ffmpeg`
 - **Linux:** `sudo apt install ffmpeg` (or your distribution's equivalent)
+- **Termux (Android):** `pkg install ffmpeg`
+
+## Platform support
+
+Works on **Windows**, **macOS**, **Linux**, and **Termux on Android**.
+The same commands and options behave identically everywhere, and the
+default download folder follows each platform's convention:
+
+| Platform | Default download folder |
+|---|---|
+| Windows | `C:\Users\you\Downloads` |
+| macOS | `/Users/you/Downloads` |
+| Linux | `/home/you/Downloads` |
+| Termux (Android) | The phone's shared `Downloads` folder after running `termux-setup-storage` once; otherwise the app-private `~/Downloads` |
 
 ## Installation
 
@@ -57,6 +71,32 @@ pip install .
 
 The `video-downloader` command is then available in any terminal. To
 update later, re-run the same `pip install` command.
+
+### Termux (Android) install
+
+Install [Termux from F-Droid](https://f-droid.org/en/packages/com.termux/)
+(the GitHub build is also fine; the Play Store build is outdated), then:
+
+```bash
+pkg update
+pkg install python ffmpeg
+termux-setup-storage        # allow the permission popup
+pip install git+https://github.com/mohammadhossein-asadi/simple-video-downloader.git
+```
+
+`termux-setup-storage` links the phone's shared storage into Termux so
+videos land in the normal **Downloads** folder you see in any file
+manager app. If `pip` refuses to install, use a small virtual
+environment instead:
+
+```bash
+python -m venv ~/video-downloader-env
+~/video-downloader-env/bin/pip install git+https://github.com/mohammadhossein-asadi/simple-video-downloader.git
+~/video-downloader-env/bin/video-downloader
+```
+
+Everything else - the interactive menu, quality choices, playlists,
+channels, and the mp4 output - works exactly as on the desktop.
 
 ## Usage
 

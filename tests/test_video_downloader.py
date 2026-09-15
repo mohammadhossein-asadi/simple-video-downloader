@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 
@@ -315,6 +316,38 @@ def test_default_download_dir_prefers_os_downloads(tmp_path, monkeypatch):
     assert cli.default_download_dir() == tmp_path / "Downloads"
 
 
+def test_termux_detection():
+    assert cli.is_termux() is ("TERMUX_VERSION" in os.environ)
+
+
+def test_termux_uses_shared_storage_downloads(tmp_path, monkeypatch):
+    """With storage granted, Termux targets the phone's shared Downloads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("TERMUX_VERSION", "0.118")
+    storage = tmp_path / "storage" / "downloads"
+    storage.mkdir(parents=True)
+    assert cli.default_download_dir() == storage
+
+
+def test_termux_falls_back_without_storage_permission(tmp_path, monkeypatch):
+    """Without termux-setup-storage, an app-private ~/Downloads is used."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("TERMUX_VERSION", "0.118")
+    assert cli.default_download_dir() == tmp_path / "Downloads"
+
+
+def test_termux_storage_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    assert cli.termux_storage_ready() is False
+    monkeypatch.setenv("TERMUX_VERSION", "0.118")
+    (tmp_path / "storage").mkdir()
+    assert cli.termux_storage_ready() is True
+
+
 def test_default_download_dir_creates_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
@@ -359,7 +392,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.build_parser().parse_args(["--version"])
     assert excinfo.value.code == 0
-    assert "1.1.0" in capsys.readouterr().out
+    assert "1.2.0" in capsys.readouterr().out
 
 
 def test_help_flag(capsys):

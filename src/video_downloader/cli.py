@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -25,9 +26,30 @@ BROWSERS = ("chrome", "firefox", "edge", "brave", "safari", "chromium",
             "opera", "vivaldi", "whale")
 
 
+def is_termux() -> bool:
+    """True when running inside Termux on Android."""
+    if "TERMUX_VERSION" in os.environ:
+        return True
+    return "com.termux" in sys.prefix or "com.termux" in str(Path.home())
+
+
+def termux_storage_ready() -> bool:
+    """True when ``termux-setup-storage`` has been run at least once."""
+    return (Path.home() / "storage").is_dir()
+
+
 def default_download_dir() -> Path:
-    """The user's standard Downloads folder, created if missing."""
+    """The user's standard Downloads folder, created if missing.
+
+    On Termux this is the phone's shared Downloads folder (once storage
+    access has been granted via ``termux-setup-storage``); without it,
+    an app-private ``~/Downloads`` is used.
+    """
     home = Path.home()
+    if is_termux():
+        shared = home / "storage" / "downloads"
+        if shared.is_dir():
+            return shared
     for name in ("Downloads", "downloads"):
         candidate = home / name
         if candidate.is_dir():
@@ -386,6 +408,10 @@ def interactive() -> int:
     options = list(QUALITY_LABELS.items())
     quality = output.choose(options, default="best")
     args.quality = quality
+
+    if is_termux() and not termux_storage_ready():
+        output.line("Tip: run 'termux-setup-storage' once so downloads can "
+                    "reach your phone's shared Downloads folder.")
 
     target = output.prompt("Download folder", default=str(default_download_dir()))
     args.output = target
