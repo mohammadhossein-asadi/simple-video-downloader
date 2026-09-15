@@ -243,6 +243,80 @@ def test_friendly_error_unknown_is_generic_and_truncated():
     assert len(reason) <= 220
 
 
+def test_normalize_proxy():
+    assert engine.normalize_proxy("127.0.0.1:8080") == "http://127.0.0.1:8080"
+    assert engine.normalize_proxy("socks5://127.0.0.1:1080") == "socks5://127.0.0.1:1080"
+    assert engine.normalize_proxy("  http://p.local:3128 ") == "http://p.local:3128"
+    assert engine.normalize_proxy(None) is None
+    assert engine.normalize_proxy("") is None
+    assert engine.normalize_proxy("   ") is None
+
+
+def test_parser_accepts_proxy():
+    args = cli.build_parser().parse_args(
+        ["--proxy", "127.0.0.1:8080", "https://x.test/v"])
+    assert args.proxy == "127.0.0.1:8080"
+
+
+def test_build_options_proxy(tmp_path):
+    opts = engine.build_options(tmp_path, "best", proxy="http://127.0.0.1:8080")
+    assert opts["proxy"] == "http://127.0.0.1:8080"
+    assert "proxy" not in engine.build_options(tmp_path, "best")
+
+
+def test_downloader_probe_uses_normalized_proxy():
+    dl = engine.Downloader(proxy="127.0.0.1:8080")
+    captured: dict = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def extract_info(self, url, download):
+            captured.update(self.__dict__.get("_opts", {}))
+            return {"_type": "video", "title": "t",
+                    "webpage_url": "https://x.test/v"}
+
+    def fake_ydl_cls(opts):
+        instance = FakeYDL(opts)
+        instance._opts = opts
+        return instance
+
+    dl._ydl_cls = fake_ydl_cls
+    dl.probe("https://x.test/v")
+    assert captured.get("proxy") == "http://127.0.0.1:8080"
+
+
+def test_network_failure_hints_at_proxy(fake_engine, capsys, tmp_path,
+                                        monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_error = RuntimeError("URLError: timed out")
+
+    args = cli.build_parser().parse_args(["https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 1
+    out = capsys.readouterr().out
+    assert "--proxy HOST:PORT" in out
+
+
+def test_network_failure_without_hint_when_proxy_given(fake_engine, capsys,
+                                                       tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_error = RuntimeError("URLError: timed out")
+
+    args = cli.build_parser().parse_args(
+        ["--proxy", "127.0.0.1:8080", "https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 1
+    assert "--proxy HOST:PORT" not in capsys.readouterr().out
+
+
 def test_missing_dependency_hint():
     exc = ModuleNotFoundError("No module named 'yt_dlp'")
     hint = missing_dependency_hint(exc)
@@ -392,7 +466,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.build_parser().parse_args(["--version"])
     assert excinfo.value.code == 0
-    assert "1.2.0" in capsys.readouterr().out
+    assert "1.3.0" in capsys.readouterr().out
 
 
 def test_help_flag(capsys):

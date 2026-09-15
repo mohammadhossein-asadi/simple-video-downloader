@@ -194,6 +194,10 @@ video-downloader "https://www.youtube.com/watch?v=VIDEO_ID" --cookies-from-brows
 
 # ...or with a cookies.txt file (Netscape format)
 video-downloader "https://www.youtube.com/watch?v=VIDEO_ID" --cookies C:\\path\\cookies.txt
+
+# Route through a VPN/proxy (local or remote)
+video-downloader "URL" --proxy 127.0.0.1:8080
+video-downloader "URL" --proxy socks5://127.0.0.1:1080
 ```
 
 ### Restricted or private content
@@ -226,6 +230,24 @@ video-downloader "URL" --cookies cookies.txt
 > **Chrome/Edge note:** while the browser is running, its cookie
 > database can be locked or unreadable. Close it completely and retry,
 > or use the cookies-file method above.
+
+### Using a VPN or proxy
+
+On networks where some sites are blocked, route the download through
+your VPN's or proxy's local port with `--proxy`. The flag accepts a
+bare `HOST:PORT` (treated as HTTP) or a full URL with a scheme:
+
+```bash
+video-downloader "URL" --proxy 127.0.0.1:8080          # HTTP proxy
+video-downloader "URL" --proxy socks5://127.0.0.1:1080 # SOCKS5 (v2ray, Tor, ...)
+video-downloader "URL" --proxy http://user:pass@proxy.example.com:3128
+```
+
+Without an explicit `--proxy`, the tool follows your system's standard
+proxy environment variables (`HTTP_PROXY` / `HTTPS_PROXY`), so a global
+VPN in TUN mode or a system-wide proxy needs no flag at all. When a
+download fails because the site cannot be reached, the error output
+suggests `--proxy` automatically.
 
 ### Command-line options
 
@@ -299,7 +321,7 @@ the download resumes where it stopped instead of starting over.
 | *The video is unavailable or private* | The content was removed or the URL is mistyped. Verify the link. |
 | *This content is age-restricted* | Age-restricted content needs a signed-in session. Retry with `--cookies-from-browser <browser>` for a browser where you are logged in. |
 | *The site is rate limiting requests* | Too many requests in a short time. Wait a few minutes and retry. |
-| *A network problem occurred* | Check your internet connection and retry. |
+| *A network problem occurred* | Check your internet connection and retry. If you use a VPN or proxy, also pass `--proxy HOST:PORT` (see *Using a VPN or proxy*). |
 | *The ffmpeg tool is missing* | Install ffmpeg (see Requirements) and make sure `ffmpeg -version` works in a terminal. |
 | *Not enough disk space* | Free up space on the target drive. |
 | *Permission denied* | Pick a folder you are allowed to write to. |

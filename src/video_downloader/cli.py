@@ -10,7 +10,12 @@ from pathlib import Path
 from video_downloader import __version__
 from video_downloader import engine, output, urlinfo
 from video_downloader.errors import (friendly_error, is_auth_headline,
+                                     is_network_error,
                                      missing_dependency_hint)
+
+PROXY_TIP = ("Tip: if you use a VPN or proxy, run again with "
+             "--proxy HOST:PORT so downloads use the same route "
+             "(see README).")
 
 QUALITY_LABELS = {
     "best": "Best available quality",
@@ -88,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sign in with a cookies.txt file (Netscape "
                              "format), as an alternative to "
                              "--cookies-from-browser")
+    parser.add_argument("--proxy", metavar="PROXY", default=None,
+                        help="route downloads through a proxy, e.g. "
+                             "127.0.0.1:8080 or socks5://127.0.0.1:1080")
     parser.add_argument("--verbose", action="store_true",
                         help="show detailed error information")
     parser.add_argument("-V", "--version", action="version",
@@ -146,6 +154,9 @@ def _probe_or_fail(downloader: engine.Downloader, url: str,
                 return info2, 0
             if offered:
                 return None, 1  # failure details already shown
+        if (is_network_error(headline)
+                and not getattr(args, "proxy", None)):
+            reason = f"{reason}\n{PROXY_TIP}"
         return None, _fail(headline, reason, verbose=verbose, exc=exc)
     if not info:
         return None, _fail("The video is unavailable or private.",
@@ -277,9 +288,10 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         output.line("Expected something like: https://www.example.com/watch?v=...")
         return 1
 
-    if args.cookies or args.cookies_file:
+    if args.cookies or args.cookies_file or args.proxy:
         downloader = engine.Downloader(cookies_from_browser=args.cookies,
-                                       cookies_file=args.cookies_file)
+                                       cookies_file=args.cookies_file,
+                                       proxy=args.proxy)
     else:
         downloader = engine.Downloader()
 
@@ -292,7 +304,7 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         if info is None:
             return 1
     else:
-        info, code = _probe_or_fail(downloader, url, args.verbose)
+        info, code = _probe_or_fail(downloader, url, args.verbose, args=args)
         if info is None:
             return code
 
@@ -344,6 +356,9 @@ def _download_probed(args: argparse.Namespace, downloader: engine.Downloader,
         headline, reason = friendly_error(exc)
         if hint:
             reason = hint
+        if (is_network_error(headline)
+                and not getattr(args, "proxy", None)):
+            reason = f"{reason}\n{PROXY_TIP}"
         # Age-restricted / private content can often be fetched once the
         # user signs in through their own browser's cookies.
         if is_auth_headline(headline):
@@ -382,7 +397,7 @@ def interactive() -> int:
 
     args = argparse.Namespace(
         url=url, output=None, quality="best", audio=False, verbose=False,
-        cookies=None, cookies_file=None,
+        cookies=None, cookies_file=None, proxy=None,
     )
 
     downloader = engine.Downloader()

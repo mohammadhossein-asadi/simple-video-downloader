@@ -15,6 +15,21 @@ from video_downloader.output import download_progress, truncate
 ProgressFn = Callable[..., None]
 
 
+def normalize_proxy(proxy: str | None) -> str | None:
+    """Return a proxy URL yt-dlp accepts, or None.
+
+    A bare ``host:port`` is treated as an HTTP proxy; explicit schemes
+    such as ``socks5://`` pass through untouched. Whitespace-only input
+    counts as "no proxy".
+    """
+    if not proxy or not str(proxy).strip():
+        return None
+    proxy = str(proxy).strip()
+    if "://" not in proxy:
+        proxy = f"http://{proxy}"
+    return proxy
+
+
 class _QuietLogger:
     """Swallow yt-dlp's own console output; we render messages ourselves."""
 
@@ -48,13 +63,15 @@ def build_options(outdir: Path, quality: str = "best",
                   quiet: bool = False,
                   number_prefix: str = "",
                   cookies_from_browser: str | None = None,
-                  cookies_file: str | Path | None = None) -> dict[str, Any]:
+                  cookies_file: str | Path | None = None,
+                  proxy: str | None = None) -> dict[str, Any]:
     """Build a safe, minimal yt-dlp option dict.
 
     *number_prefix* (e.g. ``"03 - "``) is prepended to filenames for
     numbered playlist/channel downloads. *cookies_from_browser* signs in
     using that browser's local cookies (for age-restricted content);
     *cookies_file* uses a Netscape-format cookies.txt file instead.
+    *proxy* routes all traffic through the given proxy URL.
     """
     outdir = Path(outdir).expanduser()
     options: dict[str, Any] = {
@@ -80,6 +97,8 @@ def build_options(outdir: Path, quality: str = "best",
         "ignoreerrors": False,
         "logger": _QuietLogger(),
     }
+    if proxy:
+        options["proxy"] = proxy
     if cookies_file:
         options["cookiefile"] = str(cookies_file)
     elif cookies_from_browser:
@@ -130,13 +149,15 @@ class Downloader:
 
     def __init__(self, options: dict[str, Any] | None = None,
                  cookies_from_browser: str | None = None,
-                 cookies_file: str | Path | None = None) -> None:
+                 cookies_file: str | Path | None = None,
+                 proxy: str | None = None) -> None:
         from yt_dlp import YoutubeDL  # imported lazily; yt-dlp is a hard dep
 
         self._ydl_cls = YoutubeDL
         self._options = options or {}
         self.cookies_from_browser = cookies_from_browser
         self.cookies_file = cookies_file
+        self.proxy = normalize_proxy(proxy)
         self.last_target_dir: Path | None = None
 
     def probe(self, url: str) -> dict:
@@ -151,6 +172,8 @@ class Downloader:
             "skip_download": True,
             "logger": _QuietLogger(),
         }
+        if self.proxy:
+            opts["proxy"] = self.proxy
         if self.cookies_file:
             opts["cookiefile"] = str(self.cookies_file)
         elif self.cookies_from_browser:
@@ -168,7 +191,8 @@ class Downloader:
         opts = build_options(outdir, quality, progress_fn,
                              number_prefix=number_prefix,
                              cookies_from_browser=self.cookies_from_browser,
-                             cookies_file=self.cookies_file)
+                             cookies_file=self.cookies_file,
+                             proxy=self.proxy)
         downloaded: list[dict] = []
         with self._ydl_cls(opts) as ydl:
             info = ydl.extract_info(url, download=True)

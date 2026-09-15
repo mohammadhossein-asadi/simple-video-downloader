@@ -95,6 +95,11 @@ def is_auth_headline(headline: str) -> bool:
     return headline in AUTH_HEADLINES
 
 
+def is_network_error(headline: str) -> bool:
+    """True when *headline* describes a connectivity failure."""
+    return headline == "A network problem occurred."
+
+
 def missing_dependency_hint(exc: BaseException) -> str | None:
     """Return a hint when *exc* looks like a missing runtime dependency."""
     text = f"{type(exc).__name__}: {exc}"
