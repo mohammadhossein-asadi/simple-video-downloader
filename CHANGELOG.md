@@ -35,6 +35,7 @@ All notable changes, generated from the commit history by `scripts/generate_chan
 ## v1.4.0 - 2026-09-15
 
 ### Features
+- feat: changelog generator and tag-driven release workflow (`34e59db`)
 - feat: v1.4.0 - speed/ETA, download archive, subs, preview, config, CI (`fb1c477`)
 
 ### Fixes

@@ -37,16 +37,22 @@ def versions() -> list[tuple[str, str, set[str]]]:
     """Return ``(tag, date, commit_hashes)`` oldest to newest.
 
     ``commit_hashes`` is every non-merge commit reachable from the tag;
-    per-version sections are derived by set difference.
+    per-version sections are derived by set difference. Each tag is
+    resolved to its commit with ``rev-parse tag^{commit}``, which works
+    for annotated and lightweight tags alike.
     """
     lines = _git(
         "tag", "--sort=creatordate",
-        "--format=%(refname:short)%09%(creatordate:short)%09%(object)",
+        "--format=%(refname:short)%09%(creatordate:short)",
     ).splitlines()
     result: list[tuple[str, str, set[str]]] = []
     for line in lines:
-        tag, date, obj = line.split("\t")
-        hashes = set(_git("rev-list", obj, "--no-merges").split())
+        fields = line.split("\t")
+        if len(fields) != 2:
+            continue
+        tag, date = fields
+        commit = _git("rev-parse", f"{tag}^{{commit}}")
+        hashes = set(_git("rev-list", commit, "--no-merges").split())
         result.append((tag, date, hashes))
     return result
 
