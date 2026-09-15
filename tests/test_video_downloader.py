@@ -7,7 +7,8 @@ import io
 import pytest
 
 from video_downloader import cli, engine, output, urlinfo
-from video_downloader.errors import friendly_error, missing_dependency_hint
+from video_downloader.errors import (friendly_error, is_auth_headline,
+                                     missing_dependency_hint)
 
 
 # --------------------------------------------------------------------------
@@ -151,6 +152,28 @@ def test_build_options_quiet_disables_hooks(tmp_path):
     assert opts["progress_hooks"] == []
 
 
+def test_build_options_without_cookies_has_no_cookie_option(tmp_path):
+    opts = engine.build_options(tmp_path, "best")
+    assert "cookiesfrombrowser" not in opts
+
+
+def test_build_options_cookies_from_browser(tmp_path):
+    opts = engine.build_options(tmp_path, "best",
+                                cookies_from_browser="firefox")
+    assert opts["cookiesfrombrowser"] == ("firefox", None, None, None)
+
+
+def test_build_options_cookies_file_takes_precedence(tmp_path):
+    file_opts = engine.build_options(tmp_path, "best",
+                                     cookies_file="cookies.txt")
+    assert file_opts["cookiefile"] == "cookies.txt"
+    both = engine.build_options(tmp_path, "best",
+                                cookies_from_browser="firefox",
+                                cookies_file="cookies.txt")
+    assert both["cookiefile"] == "cookies.txt"
+    assert "cookiesfrombrowser" not in both
+
+
 def test_progress_hook_adapts_to_progress_fn():
     seen = []
     hook = engine._make_hook(lambda status, t, total: seen.append((status, t, total)))
@@ -184,8 +207,32 @@ def test_friendly_error_mapping(message, expected):
 
 
 def test_friendly_error_age_restriction():
-    headline, _ = friendly_error(RuntimeError("This video is age restricted"))
+    headline, reason = friendly_error(RuntimeError("This video is age restricted"))
     assert "age-restricted" in headline.lower()
+    assert "cookies" in reason.lower()  # points to the sign-in remedy
+
+
+def test_auth_headline_detection():
+    assert is_auth_headline("This content is age-restricted.") is True
+    assert is_auth_headline("This content is private or requires sign-in.") is True
+    assert is_auth_headline("A network problem occurred.") is False
+    assert is_auth_headline("Download failed.") is False
+
+
+def test_friendly_error_cookie_database_locked():
+    headline, reason = friendly_error(RuntimeError(
+        "ERROR: Could not copy Chrome cookie database. See "
+        "https://github.com/yt-dlp/yt-dlp/issues/7271"))
+    assert headline == "Could not read your browser's cookies."
+    assert "Close the browser completely" in reason
+
+
+def test_friendly_error_strips_ytdlp_error_prefix():
+    headline, reason = friendly_error(RuntimeError(
+        "ERROR: something unusual happened"))
+    assert headline == "Download failed."
+    assert reason.startswith("something unusual happened")
+    assert not reason.startswith("ERROR:")
 
 
 def test_friendly_error_unknown_is_generic_and_truncated():
@@ -287,6 +334,7 @@ def test_parser_defaults():
     assert args.quality == "best"
     assert args.audio is False
     assert args.verbose is False
+    assert args.cookies is None
 
 
 def test_parser_accepts_url_output_quality():
@@ -311,7 +359,7 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.build_parser().parse_args(["--version"])
     assert excinfo.value.code == 0
-    assert "1.0.0" in capsys.readouterr().out
+    assert "1.1.0" in capsys.readouterr().out
 
 
 def test_help_flag(capsys):
@@ -326,6 +374,40 @@ def test_help_flag(capsys):
 def test_rejects_invalid_quality():
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["-q", "8k", "https://x.test/v"])
+
+
+def test_parser_accepts_cookies_from_browser():
+    args = cli.build_parser().parse_args(
+        ["--cookies-from-browser", "firefox", "https://x.test/v"])
+    assert args.cookies == "firefox"
+
+
+def test_parser_accepts_cookies_file():
+    args = cli.build_parser().parse_args(
+        ["--cookies", "C:\\tmp\\cookies.txt", "https://x.test/v"])
+    assert args.cookies_file == "C:\\tmp\\cookies.txt"
+
+
+def test_cookies_file_probes_with_sign_in(fake_engine, capsys, tmp_path,
+                                          monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = _video_info()
+    fake_engine.run_results = [{"title": "Hello Video"}]
+
+    args = cli.build_parser().parse_args(
+        ["--cookies", "cookies.txt", "https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 0
+
+    out = capsys.readouterr().out
+    assert "cookies from cookies.txt" in out
+    assert "Downloaded: 1" in out
+
+
+def test_parser_rejects_unknown_browser():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            ["--cookies-from-browser", "netscape", "https://x.test/v"])
 
 
 # --------------------------------------------------------------------------
@@ -500,6 +582,88 @@ def test_interactive_flow_invalid_url(fake_engine, capsys, monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO("not a url\n"))
     assert cli.main([]) == 1
     assert "valid URL" in capsys.readouterr().out
+
+
+def test_age_restricted_download_offers_browser_sign_in(fake_engine, capsys,
+                                                        tmp_path, monkeypatch):
+    """An age-gated failure offers a cookie sign-in and then succeeds."""
+    from yt_dlp.utils import DownloadError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = _video_info()
+
+    class AgeGated(FakeDownloader):
+        run_calls = 0
+
+        def run(self, url, outdir, quality="best", progress_fn=None):
+            AgeGated.run_calls += 1
+            if AgeGated.run_calls == 1:
+                raise DownloadError("ERROR: Sign in to confirm your age")
+            return ([{"title": "Hello Video"}], [])
+
+    monkeypatch.setattr(engine, "Downloader", AgeGated)
+    # Pretend we are on a real terminal with a user answering yes/chrome.
+    monkeypatch.setattr(output, "is_interactive", lambda: True)
+    asked: list[str] = []
+
+    def fake_ask(message, **kwargs):
+        asked.append(message)
+        return True
+
+    monkeypatch.setattr(output, "ask", fake_ask)
+    monkeypatch.setattr(output, "prompt",
+                        lambda *a, **k: "chrome")
+
+    args = cli.build_parser().parse_args(["https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 0
+
+    out = capsys.readouterr().out
+    assert any("Sign in with your browser's cookies" in m for m in asked)
+    assert "Signing in with your chrome cookies" in out
+    assert "Signed in - access granted" in out
+    assert "Downloaded: 1" in out
+
+
+def test_age_restricted_failure_stays_clean_when_not_interactive(fake_engine,
+                                                                 capsys,
+                                                                 tmp_path,
+                                                                 monkeypatch):
+    """No retry offer (and no crash) when there is no terminal to ask."""
+    from yt_dlp.utils import DownloadError
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = _video_info()
+
+    class AgeGated(FakeDownloader):
+        def run(self, url, outdir, quality="best", progress_fn=None):
+            raise DownloadError("ERROR: Sign in to confirm your age")
+
+    monkeypatch.setattr(engine, "Downloader", AgeGated)
+    monkeypatch.setattr(output, "is_interactive", lambda: False)
+
+    args = cli.build_parser().parse_args(["https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 1
+    out = capsys.readouterr().out
+    assert "age-restricted" in out.lower()
+    assert "cookies-from-browser" in out   # remedy is documented
+
+
+def test_cookies_flag_probes_with_sign_in(fake_engine, capsys, tmp_path,
+                                          monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    fake_engine.probe_info = _video_info()
+    fake_engine.run_results = [{"title": "Hello Video"}]
+
+    args = cli.build_parser().parse_args(
+        ["--cookies-from-browser", "firefox", "https://x.test/watch?v=1"])
+    assert cli.run_download(args) == 0
+
+    out = capsys.readouterr().out
+    assert "Signing in with your firefox cookies" in out
+    assert "Downloaded: 1" in out
 
 
 def test_interactive_flow_probe_failure(fake_engine, capsys, tmp_path,

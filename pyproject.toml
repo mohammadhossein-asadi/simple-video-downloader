@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simple-video-downloader"
-version = "1.0.0"
+dynamic = ["version"]
 description = "A simple CLI to download videos, playlists, and channels - powered by yt-dlp"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -43,6 +43,9 @@ Issues = "https://github.com/mohammadhossein-asadi/simple-video-downloader/issue
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "video_downloader.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

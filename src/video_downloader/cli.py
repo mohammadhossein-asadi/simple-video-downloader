@@ -8,7 +8,8 @@ from pathlib import Path
 
 from video_downloader import __version__
 from video_downloader import engine, output, urlinfo
-from video_downloader.errors import friendly_error, missing_dependency_hint
+from video_downloader.errors import (friendly_error, is_auth_headline,
+                                     missing_dependency_hint)
 
 QUALITY_LABELS = {
     "best": "Best available quality",
@@ -19,6 +20,9 @@ QUALITY_LABELS = {
 }
 
 QUALITY_CHOICES = list(QUALITY_LABELS)
+
+BROWSERS = ("chrome", "firefox", "edge", "brave", "safari", "chromium",
+            "opera", "vivaldi", "whale")
 
 
 def default_download_dir() -> Path:
@@ -51,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="quality preference (default: best)")
     parser.add_argument("-a", "--audio", action="store_true",
                         help="audio only, saved as mp3 (shorthand for --quality audio)")
+    parser.add_argument("--cookies-from-browser", metavar="BROWSER",
+                        dest="cookies", default=None,
+                        choices=BROWSERS,
+                        help="sign in with a browser's cookies, for "
+                             "age-restricted or private content "
+                             f"({', '.join(BROWSERS)})")
+    parser.add_argument("--cookies", metavar="FILE", dest="cookies_file",
+                        default=None,
+                        help="sign in with a cookies.txt file (Netscape "
+                             "format), as an alternative to "
+                             "--cookies-from-browser")
     parser.add_argument("--verbose", action="store_true",
                         help="show detailed error information")
     parser.add_argument("-V", "--version", action="version",
@@ -87,8 +102,13 @@ def _fail(headline: str, reason: str, verbose: bool = False,
 
 
 def _probe_or_fail(downloader: engine.Downloader, url: str,
-                   verbose: bool) -> tuple[dict | None, int]:
-    """Probe the URL; on failure print a friendly error and return (None, 1)."""
+                   verbose: bool,
+                   args: argparse.Namespace | None = None) -> tuple[dict | None, int]:
+    """Probe the URL; on failure print a friendly error and return (None, 1).
+
+    When *args* is given and the failure looks like a sign-in gate, offer
+    a browser-cookie retry (interactive terminals only).
+    """
     try:
         info = downloader.probe(url)
     except KeyboardInterrupt:
@@ -98,11 +118,94 @@ def _probe_or_fail(downloader: engine.Downloader, url: str,
         headline, reason = friendly_error(exc)
         if hint:
             reason = hint
+        if args is not None and is_auth_headline(headline):
+            info2, offered = _offer_cookie_signin(downloader, url, args)
+            if info2 is not None:
+                return info2, 0
+            if offered:
+                return None, 1  # failure details already shown
         return None, _fail(headline, reason, verbose=verbose, exc=exc)
     if not info:
         return None, _fail("The video is unavailable or private.",
                            "Please verify the URL and try again.")
     return info, 0
+
+
+def _offer_cookie_signin(downloader: engine.Downloader, url: str,
+                         args: argparse.Namespace) -> tuple[dict | None, bool]:
+    """Offer a browser-cookie sign-in retry for gated content.
+
+    Returns ``(info, offered)``: *info* is not None when the retry probe
+    succeeded (and ``args.cookies`` is remembered for the run); *offered*
+    is False when no offer was possible or the user declined.
+    """
+    if (not output.is_interactive() or getattr(args, "cookies", None)
+            or getattr(args, "cookies_file", None)):
+        return None, False
+    if not output.ask("Sign in with your browser's cookies and retry?",
+                      default=True):
+        return None, False
+    browser = output.prompt("Which browser are you signed in with",
+                            default="chrome")
+    if browser not in BROWSERS:
+        browser = "chrome"
+    info, _err = _probe_with_cookies(downloader, url, browser)
+    if info is None:
+        return None, True
+    args.cookies = browser
+    return info, True
+
+
+def _probe_with_cookie_file(downloader: engine.Downloader, url: str,
+                            cookies_file: str) -> tuple[dict | None, str | None]:
+    """Probe *url* using a cookies.txt file; mirrors the browser variant."""
+    output.line(f"\nUsing cookies from {cookies_file}...")
+    downloader.cookies_file = cookies_file
+    try:
+        info = downloader.probe(url)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        headline, reason = friendly_error(exc)
+        output.line(f"{output._FAIL} Could not access the content with "
+                    "these cookies.")
+        output.line()
+        output.line(reason)
+        return None, headline
+    if not info:
+        output.line(f"{output._FAIL} Could not access the content with "
+                    "these cookies.")
+        return None, "The video is unavailable or private."
+    output.line(f"{output._OK} Signed in - access granted.")
+    return info, None
+
+
+def _probe_with_cookies(downloader: engine.Downloader, url: str,
+                        browser: str) -> tuple[dict | None, str | None]:
+    """Probe *url* using *browser* cookies.
+
+    Returns ``(info, None)`` on success or ``(None, friendly_headline)``
+    on a clean failure.
+    """
+    output.line(f"\nSigning in with your {browser} cookies...")
+    downloader.cookies_from_browser = browser
+    try:
+        info = downloader.probe(url)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        headline, reason = friendly_error(exc)
+        output.line(f"{output._FAIL} Could not access the content with "
+                    f"{browser} cookies.")
+        output.line()
+        output.line(reason)
+        return None, headline
+    if not info:
+        output.line(f"{output._FAIL} Could not access the content with "
+                    f"{browser} cookies.")
+        return None, "The video is unavailable or private."
+    output.line(f"{output._OK} Signed in - access granted.")
+    return info, None
 
 
 class _ProgressReporter:
@@ -152,9 +255,33 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         output.line("Expected something like: https://www.example.com/watch?v=...")
         return 1
 
+    if args.cookies or args.cookies_file:
+        downloader = engine.Downloader(cookies_from_browser=args.cookies,
+                                       cookies_file=args.cookies_file)
+    else:
+        downloader = engine.Downloader()
+
+    if args.cookies_file:
+        info, err = _probe_with_cookie_file(downloader, url, args.cookies_file)
+        if info is None:
+            return 1
+    elif args.cookies:
+        info, err = _probe_with_cookies(downloader, url, args.cookies)
+        if info is None:
+            return 1
+    else:
+        info, code = _probe_or_fail(downloader, url, args.verbose)
+        if info is None:
+            return code
+
+    return _download_probed(args, downloader, url, info, announce=announce)
+
+
+def _download_probed(args: argparse.Namespace, downloader: engine.Downloader,
+                     url: str, info: dict, announce: bool = True) -> int:
+    """Finish a direct download whose probe already succeeded."""
     outdir = _outdir_from(args)
     quality = _quality_from(args)
-    downloader = engine.Downloader()
 
     try:
         outdir.mkdir(parents=True, exist_ok=True)
@@ -162,10 +289,6 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         return _fail("Cannot create the download folder.",
                      f"Permission denied while creating: {outdir}", exc=exc,
                      verbose=args.verbose)
-
-    info, code = _probe_or_fail(downloader, url, args.verbose)
-    if info is None:
-        return code
 
     kind, count = urlinfo.classify(info)
     title = output.truncate(str(info.get("title") or url))
@@ -199,6 +322,15 @@ def run_download(args: argparse.Namespace, announce: bool = True) -> int:
         headline, reason = friendly_error(exc)
         if hint:
             reason = hint
+        # Age-restricted / private content can often be fetched once the
+        # user signs in through their own browser's cookies.
+        if is_auth_headline(headline):
+            info2, offered = _offer_cookie_signin(downloader, url, args)
+            if info2 is not None:
+                return _download_probed(args, downloader, url, info2,
+                                        announce=True)
+            if offered:
+                return 1  # failure details already shown
         return _fail(headline, reason, verbose=args.verbose, exc=exc)
 
     if not results and not failures:
@@ -228,10 +360,11 @@ def interactive() -> int:
 
     args = argparse.Namespace(
         url=url, output=None, quality="best", audio=False, verbose=False,
+        cookies=None, cookies_file=None,
     )
 
     downloader = engine.Downloader()
-    info, code = _probe_or_fail(downloader, url, verbose=False)
+    info, code = _probe_or_fail(downloader, url, verbose=False, args=args)
     if info is None:
         return code
 

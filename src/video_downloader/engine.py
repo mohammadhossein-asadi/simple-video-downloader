@@ -46,11 +46,15 @@ QUALITY_FORMATS: dict[str, str] = {
 def build_options(outdir: Path, quality: str = "best",
                   progress_fn: ProgressFn | None = None,
                   quiet: bool = False,
-                  number_prefix: str = "") -> dict[str, Any]:
+                  number_prefix: str = "",
+                  cookies_from_browser: str | None = None,
+                  cookies_file: str | Path | None = None) -> dict[str, Any]:
     """Build a safe, minimal yt-dlp option dict.
 
     *number_prefix* (e.g. ``"03 - "``) is prepended to filenames for
-    numbered playlist/channel downloads.
+    numbered playlist/channel downloads. *cookies_from_browser* signs in
+    using that browser's local cookies (for age-restricted content);
+    *cookies_file* uses a Netscape-format cookies.txt file instead.
     """
     outdir = Path(outdir).expanduser()
     options: dict[str, Any] = {
@@ -76,6 +80,11 @@ def build_options(outdir: Path, quality: str = "best",
         "ignoreerrors": False,
         "logger": _QuietLogger(),
     }
+    if cookies_file:
+        options["cookiefile"] = str(cookies_file)
+    elif cookies_from_browser:
+        options["cookiesfrombrowser"] = (
+            cookies_from_browser, None, None, None)
     if quality == "audio":
         options["postprocessors"] = [{
             "key": "FFmpegExtractAudio",
@@ -119,11 +128,15 @@ def _make_hook(progress_fn: ProgressFn) -> Callable[[dict], None]:
 class Downloader:
     """Thin wrapper around a yt-dlp YoutubeDL instance."""
 
-    def __init__(self, options: dict[str, Any] | None = None) -> None:
+    def __init__(self, options: dict[str, Any] | None = None,
+                 cookies_from_browser: str | None = None,
+                 cookies_file: str | Path | None = None) -> None:
         from yt_dlp import YoutubeDL  # imported lazily; yt-dlp is a hard dep
 
         self._ydl_cls = YoutubeDL
         self._options = options or {}
+        self.cookies_from_browser = cookies_from_browser
+        self.cookies_file = cookies_file
         self.last_target_dir: Path | None = None
 
     def probe(self, url: str) -> dict:
@@ -138,6 +151,11 @@ class Downloader:
             "skip_download": True,
             "logger": _QuietLogger(),
         }
+        if self.cookies_file:
+            opts["cookiefile"] = str(self.cookies_file)
+        elif self.cookies_from_browser:
+            opts["cookiesfrombrowser"] = (
+                self.cookies_from_browser, None, None, None)
         with self._ydl_cls(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             return info if isinstance(info, dict) else {}
@@ -148,7 +166,9 @@ class Downloader:
                  number_prefix: str = "") -> list[dict]:
         """Download *url* into *outdir*; returns list of final file infos."""
         opts = build_options(outdir, quality, progress_fn,
-                             number_prefix=number_prefix)
+                             number_prefix=number_prefix,
+                             cookies_from_browser=self.cookies_from_browser,
+                             cookies_file=self.cookies_file)
         downloaded: list[dict] = []
         with self._ydl_cls(opts) as ydl:
             info = ydl.extract_info(url, download=True)

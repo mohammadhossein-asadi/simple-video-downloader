@@ -62,6 +62,8 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp).
   numbered by playlist position, stable across resumed runs
 - A failed item never stops the batch: the summary reports
   downloaded / failed items and re-running retries only the failures
+- Age-restricted or private content: sign in through your own browser's
+  cookies (`--cookies-from-browser chrome` or the interactive offer)
 - Plain-English error messages; full detail only with `--verbose`
 - Cross-platform: Windows, macOS, and Linux
 
@@ -146,7 +148,44 @@ video-downloader "https://example.com/video" --quality 720p --output D:\\Videos
 
 # Audio only (mp3)
 video-downloader "https://example.com/video" --audio
+
+# Age-restricted content: sign in via your browser's cookies
+video-downloader "https://www.youtube.com/watch?v=VIDEO_ID" --cookies-from-browser chrome
+
+# ...or with a cookies.txt file (Netscape format)
+video-downloader "https://www.youtube.com/watch?v=VIDEO_ID" --cookies C:\\path\\cookies.txt
 ```
+
+### Restricted or private content
+
+Some videos (typically age-restricted ones) can only be accessed while
+signed in. The tool never stores credentials: it borrows the login
+cookies already saved in your own browser, on your machine, for the
+download only.
+
+```bash
+# Explicitly, in one command:
+video-downloader "URL" --cookies-from-browser chrome
+
+# Or interactively: when a download fails because the content requires
+# sign-in, the tool offers to retry using your browser's cookies.
+```
+
+Supported browsers: `chrome`, `firefox`, `edge`, `brave`, `safari`,
+`chromium`, `opera`, `vivaldi`, `whale`. Use the browser where you are
+logged in to the site. Cookies stay on your computer and are never
+sent anywhere except to the site hosting the video.
+
+If reading the browser's cookie store fails, export a cookies file with
+a browser extension (search for "Get cookies.txt") and pass it instead:
+
+```bash
+video-downloader "URL" --cookies cookies.txt
+```
+
+> **Chrome/Edge note:** while the browser is running, its cookie
+> database can be locked or unreadable. Close it completely and retry,
+> or use the cookies-file method above.
 
 ### Command-line options
 
@@ -216,9 +255,9 @@ the download resumes where it stopped instead of starting over.
 
 | Message | What it means / what to do |
 |---|---|
-| *This content is private or requires sign-in* | The video is private, members-only, or the site requires a login. Such content cannot be downloaded. |
+| *This content is private or requires sign-in* | The video is private or members-only, or the site wants verification. If you have access to it, retry with `--cookies-from-browser <browser>` (see *Restricted or private content* above). |
 | *The video is unavailable or private* | The content was removed or the URL is mistyped. Verify the link. |
-| *This content is age-restricted* | Age-restricted content needs an account and cannot be fetched anonymously. |
+| *This content is age-restricted* | Age-restricted content needs a signed-in session. Retry with `--cookies-from-browser <browser>` for a browser where you are logged in. |
 | *The site is rate limiting requests* | Too many requests in a short time. Wait a few minutes and retry. |
 | *A network problem occurred* | Check your internet connection and retry. |
 | *The ffmpeg tool is missing* | Install ffmpeg (see Requirements) and make sure `ffmpeg -version` works in a terminal. |

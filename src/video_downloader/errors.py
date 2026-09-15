@@ -18,15 +18,29 @@ def friendly_error(exc: BaseException) -> tuple[str, str]:
     """
     message = str(exc)
 
+    if _match(message, "could not copy", "cookie database"):
+        return ("Could not read your browser's cookies.",
+                "Close the browser completely and retry, or choose a "
+                "different browser where you are signed in. Recent Chrome "
+                "versions protect their cookies; Firefox and Edge work "
+                "reliably.")
+    if _match(message, "age-restricted", "age restricted", "confirm your age",
+              "age gate", "inappropriate"):
+        return ("This content is age-restricted.",
+                "Age-restricted content can only be accessed while signed in. "
+                "Retry and choose to sign in with your browser's cookies - or "
+                "run with --cookies-from-browser <browser>.")
+    if _match(message, "not a bot"):
+        return ("The site is rate limiting requests.",
+                "Too many requests were sent in a short time. Wait a few "
+                "minutes before trying again.")
     if _match(message, "private video", "members-only", "sign in to confirm",
               "login required", "account", "cookies"):
         return ("This content is private or requires sign-in.",
                 "The video may be private, members-only, or the site is asking "
-                "for verification. Content behind a login cannot be downloaded.")
-    if _match(message, "age"):
-        return ("This content is age-restricted.",
-                "Age-restricted content requires an account; the downloader "
-                "cannot access it anonymously.")
+                "for verification. If you have access, retry and choose to "
+                "sign in with your browser's cookies - or run with "
+                "--cookies-from-browser <browser>.")
     if _match(message, "http error 5", "server error", "503", "500"):
         return ("The site had a server problem.",
                 "The website reported an internal error. Try again later.")
@@ -35,7 +49,7 @@ def friendly_error(exc: BaseException) -> tuple[str, str]:
         return ("The video is unavailable or private.",
                 "Please verify the URL and try again - the content may have "
                 "been removed or the link may be mistyped.")
-    if _match(message, "rate limit", "too many requests", "429", "sign in to confirm you're not a bot"):
+    if _match(message, "rate limit", "too many requests", "429"):
         return ("The site is rate limiting requests.",
                 "Too many requests were sent in a short time. Wait a few "
                 "minutes before trying again.")
@@ -60,11 +74,25 @@ def friendly_error(exc: BaseException) -> tuple[str, str]:
                 "ffmpeg is required for high-quality downloads. Install it "
                 "and make sure it is on your PATH (see README).")
 
-    # Unknown: stay honest, remain readable.
-    short = re.sub(r"\s+", " ", message).strip()
+    # Unknown: stay honest, remain readable. yt-dlp prefixes its errors
+    # with "ERROR: "; drop it so the message does not stutter.
+    short = re.sub(r"^ERROR:\s*", "", message, flags=re.IGNORECASE)
+    short = re.sub(r"\s+", " ", short).strip()
     if len(short) > 220:
         short = short[:217] + "..."
     return ("Download failed.", short or "An unexpected error occurred.")
+
+
+# Headlines for failures that a browser-cookie sign-in can fix.
+AUTH_HEADLINES = (
+    "This content is age-restricted.",
+    "This content is private or requires sign-in.",
+)
+
+
+def is_auth_headline(headline: str) -> bool:
+    """True when *headline* describes a sign-in-gated failure."""
+    return headline in AUTH_HEADLINES
 
 
 def missing_dependency_hint(exc: BaseException) -> str | None:

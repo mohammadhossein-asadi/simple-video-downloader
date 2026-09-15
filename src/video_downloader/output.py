@@ -114,6 +114,14 @@ def download_progress(title: str, transferred: int, total: int | None) -> str:
     return progress_line(percent, title, _fmt_size(transferred), "")
 
 
+def is_interactive() -> bool:
+    """True when both stdin and stdout are a real terminal."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def prompt(text: str, default: str | None = None) -> str:
     """Prompt the user; returns the default on empty input."""
     suffix = f" [{default}]" if default is not None else ""
